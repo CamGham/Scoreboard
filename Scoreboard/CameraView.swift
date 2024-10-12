@@ -17,6 +17,14 @@ struct CameraView: View {
         .task {
             await camera.start()
         }
+        .onReceive(camera.predictionTimer, perform: { _ in
+            camera.canPredict = true
+        })
+        .overlay(alignment: .top) {
+            HStack {
+                Text(camera.myLabel)
+            }
+        }
     }
 }
 

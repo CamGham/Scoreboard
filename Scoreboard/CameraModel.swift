@@ -12,11 +12,21 @@ import Vision
 import Combine
 
 @Observable
-final class CameraModel {
-    
+final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     
     var previewSource: PreviewSource { captureService.previewSource }
     let captureService = CaptureService()
+    
+    var myLabel = ""
+    var canPredict = false
+    let predictionTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+
+    override init() {
+        super.init()
+        Task {
+            await captureService.setOutputDelegate(source: self)
+        }
+    }
     
     func start() async {
         guard await captureService.isAuthorized else {
@@ -30,73 +40,33 @@ final class CameraModel {
         }
     }
     
-
+    func makeObservations(pixelBuffer: CVImageBuffer) async {
+        guard canPredict else { return }
+        
+        Task { @MainActor in
+            canPredict = false
+        }
     
- 
-    func classifyImage(img: CIImage) async throws -> String {
-        let req = ClassifyImageRequest()
-//        var obs: [String:Float] = [:]
-        var obs: [String] = []
-        
-        let res = try await req.perform(on: img).filter { ob in
-            ob.hasMinimumPrecision(0.1, forRecall: 0.8)
+        Task {
+            let handler = ImageRequestHandler(pixelBuffer)
+            let req = try await handler.perform(ClassifyImageRequest())
+            
+            let res = req.filter { ob in
+                ob.hasMinimumRecall(0.01, forPrecision: 0.9)
+            }
+            
+            Task { @MainActor in
+                myLabel = res.first?.identifier ?? "Unknown"
+            }
         }
-        
-        
-        for classification in res {
-            obs.append(classification.identifier)
-//            obs[classification.identifier] = classification.confidence
-        }
-        
-        
-        
-        return obs.first ?? "Unknown"
     }
     
-    
-}
-
-
-class OutputDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-
-    func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-//        print("frame dropped")
-    }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-//        print("new frame")
-        do {
-//            try sampleBuffer.makeDataReady()
-            
-            
-            guard let buf = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-            
+        guard let buf = sampleBuffer.imageBuffer else { return }
 
-            let handler = ImageRequestHandler(buf)
-            
-            Task {
-                
-//                let con = DetectContoursRequest()
-//                let req = try await handler.perform(con)
-//                
-//                print("\(req.description)")
-//                path = req.normalizedPath
-                
-                
-                let req = try await handler.perform(ClassifyImageRequest())
-                
-                let res = req.filter { ob in
-                    ob.hasMinimumRecall(0.01, forPrecision: 0.9)
-                }
-               
-               
-                for cl in res {
-                    print("\(cl.identifier) \(cl.confidence)")
-                }
-            }
-        } catch {
-            
+        Task {
+            await makeObservations(pixelBuffer: buf)
         }
-        
     }
 }

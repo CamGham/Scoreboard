@@ -15,7 +15,7 @@ actor CaptureService {
     
     private var activeVideoInput: AVCaptureDeviceInput?
     var videoOutput: AVCaptureVideoDataOutput?
-    
+    var captureDelegate: AVCaptureVideoDataOutputSampleBufferDelegate?
     
     private let backCameraDiscoverSession: AVCaptureDevice.DiscoverySession
     
@@ -25,6 +25,10 @@ actor CaptureService {
         
         previewSource = DefaultPreviewSource(session: captureSession)
     
+    }
+    
+    func setOutputDelegate(source: AVCaptureVideoDataOutputSampleBufferDelegate) {
+        captureDelegate = source
     }
     
     var isAuthorized: Bool {
@@ -62,9 +66,7 @@ actor CaptureService {
     
     func setup() throws {
         do {
-            
             captureSession.beginConfiguration()
-            
             
             // input
             guard let camera = cameras.first else { throw CameraError.videoDeviceUnavailable }
@@ -90,14 +92,16 @@ actor CaptureService {
             
             videoOutput = liveOutput
             
-            
-//            outputDelegate = OutputDelegate()
-            
-            videoOutput?.setSampleBufferDelegate(self, queue: .global(qos: .userInitiated))
 
+            // pixel buffer for ML observation
+            guard let captureDelegate = captureDelegate else {
+                return
+            }
+            
+            videoOutput?.setSampleBufferDelegate(captureDelegate, queue: .global(qos: .userInitiated))
+
+            
             captureSession.commitConfiguration()
-            
-            
             
         } catch {
             throw CameraError.setupFailed
