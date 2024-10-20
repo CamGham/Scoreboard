@@ -12,7 +12,7 @@ struct ScoreboardTabView: View {
     var body: some View {
         TabView(selection: $tabSelection) {
             Tab(Tabs.scoreboard.name, systemImage: Tabs.scoreboard.symbol, value: Tabs.scoreboard) {
-                Text("hello")
+                ScoreboardView()
             }
             
             Tab(Tabs.analyse.name, systemImage: Tabs.analyse.symbol, value: Tabs.analyse) {
