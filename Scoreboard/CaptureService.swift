@@ -7,6 +7,7 @@
 
 import AVFoundation
 import CoreImage
+import UIKit
 
 // Run off of the MainActor
 actor CaptureService {
@@ -19,12 +20,15 @@ actor CaptureService {
     
     private let backCameraDiscoverSession: AVCaptureDevice.DiscoverySession
     
+    // Image size
+    var bufferSize: CGSize = .zero
+    let videoQueue = DispatchQueue(label: "VideoQueue", qos: .userInitiated, autoreleaseFrequency: .workItem)
+    
     init() {
         
         backCameraDiscoverSession = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInDualCamera, .builtInWideAngleCamera], mediaType: .video, position: .back)
         
         previewSource = DefaultPreviewSource(session: captureSession)
-    
     }
     
     func setOutputDelegate(source: AVCaptureVideoDataOutputSampleBufferDelegate) {
@@ -67,6 +71,8 @@ actor CaptureService {
     func setup() throws {
         do {
             captureSession.beginConfiguration()
+            // YOLOv3 only requires 480
+            captureSession.sessionPreset = .vga640x480
             
             // input
             guard let camera = cameras.first else { throw CameraError.videoDeviceUnavailable }
@@ -75,6 +81,7 @@ actor CaptureService {
             if captureSession.canAddInput(cameraInput) {
                 captureSession.addInput(cameraInput)
             } else {
+                captureSession.commitConfiguration()
                 throw CameraError.addInputFailed
             }
             activeVideoInput = cameraInput
@@ -83,23 +90,35 @@ actor CaptureService {
             // output
             let liveOutput = AVCaptureVideoDataOutput()
             if captureSession.canAddOutput(liveOutput) {
-//                captureSession.sessionPreset = .hd1280x720
                 captureSession.addOutput(liveOutput)
             } else {
+                captureSession.commitConfiguration()
                 throw CameraError.addOutputFailed
             }
             liveOutput.alwaysDiscardsLateVideoFrames = true
             
-            videoOutput = liveOutput
-            
-
             // pixel buffer for ML observation
             guard let captureDelegate = captureDelegate else {
-                return
+                captureSession.commitConfiguration()
+                throw CameraError.setupFailed
             }
+            liveOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)]
+            // Set raw pixel output for detector
+            liveOutput.setSampleBufferDelegate(captureDelegate, queue: videoQueue)
+            videoOutput = liveOutput
             
-            videoOutput?.setSampleBufferDelegate(captureDelegate, queue: .global(qos: .userInitiated))
-
+            
+            // image size for rects
+            let captureConnection = liveOutput.connection(with: .video)
+            captureConnection?.isEnabled = true
+            do {
+                try updateBufferDimensions()
+            } catch {
+                captureSession.commitConfiguration()
+                
+                print(error)
+                throw CameraError.setupFailed
+            }
             
             captureSession.commitConfiguration()
             
@@ -108,6 +127,21 @@ actor CaptureService {
         }
     }
     
+    func updateBufferDimensions() throws {
+        guard let camera = cameras.first else { throw CameraError.videoDeviceUnavailable }
+        
+        do {
+            try camera.lockForConfiguration()
+            let dimensions = CMVideoFormatDescriptionGetDimensions((camera.activeFormat.formatDescription))
+            bufferSize.width = CGFloat(dimensions.width)
+            bufferSize.height = CGFloat(dimensions.height)
+            camera.unlockForConfiguration()
+        } catch {
+            
+            print(error)
+            throw CameraError.setupFailed
+        }
+    }
 }
 
 enum CameraError: Error {
