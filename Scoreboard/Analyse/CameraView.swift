@@ -11,9 +11,13 @@ import AVFoundation
 
 struct CameraView: View {
     @State var camera = CameraModel()
-    @State var showHumanSegmentation = false
+//    @State var showHumanSegmentation = false
+    
+    @Binding var dismissCam: Bool
+    
     var body: some View {
         CameraPreview(source: camera.previewSource)
+            .ignoresSafeArea()
         .task {
             await camera.start()
         }
@@ -50,6 +54,11 @@ struct CameraView: View {
                 }
             }
         }
+        .overlay(alignment: .topLeading) {
+            Button("Close") {
+                dismissCam.toggle()
+            }
+        }
     }
     
     func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
@@ -67,5 +76,5 @@ struct CameraView: View {
 }
 
 #Preview {
-    CameraView()
+    CameraView(dismissCam: .constant(false))
 }

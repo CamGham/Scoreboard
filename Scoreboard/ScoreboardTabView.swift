@@ -16,7 +16,7 @@ struct ScoreboardTabView: View {
             }
             
             Tab(Tabs.analyse.name, systemImage: Tabs.analyse.symbol, value: Tabs.analyse) {
-                CameraView()
+                AnalyseView()
             }
             
            
