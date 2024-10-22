@@ -6,25 +6,33 @@
 //
 
 import SwiftUI
+import PhotosUI
 
 struct AnalyseView: View {
     @State var showLiveCamera = false
+    @State var selectedImages: [PhotosPickerItem] = [] {
+        didSet {
+            
+        }
+    }
     var body: some View {
         HStack {
-            Button {
-                print("Open Recording")
-            } label: {
+            Spacer()
+            PhotosPicker(selection: $selectedImages, photoLibrary: .shared()) {
                 Text("Library")
             }
+            .buttonStyle(.bordered)
             
+            Spacer()
             Button {
                 showLiveCamera.toggle()
             } label: {
                 Text("Live")
             }
+            .buttonStyle(.borderedProminent)
+            Spacer()
         }
         .fullScreenCover(isPresented: $showLiveCamera) {
-            
             CameraView(dismissCam: $showLiveCamera)
         }
     }

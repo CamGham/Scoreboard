@@ -23,13 +23,8 @@ struct ScoreboardTabView: View {
             
             Tab(Tabs.profile.name,
                 systemImage: Tabs.profile.symbol, value: Tabs.profile) {
-               
-                
                 List {
                     Text("Profile")
-//                    Tab(Tabs.history.name, systemImage: Tabs.history.symbol, value: Tabs.history) {
-//                        Text("world")
-//                    }
                 }
             }
         }
