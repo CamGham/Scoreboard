@@ -8,12 +8,16 @@
 import SwiftUI
 import Vision
 import AVFoundation
+import GroupActivities
 
 struct CameraView: View {
     @State var camera = CameraModel()
 //    @State var showHumanSegmentation = false
     
     @Binding var dismissCam: Bool
+    @State var showActivitySharingSheet = false
+    
+    var identifiedObject: IdentifiedObject = IdentifiedObject(origin: "Cam", name: "Nothing")
     
     var body: some View {
         CameraPreview(source: camera.previewSource)
@@ -59,6 +63,23 @@ struct CameraView: View {
                 dismissCam.toggle()
             }
         }
+        .overlay(alignment: .topTrailing) {
+            Button {
+                startActivity()
+            } label: {
+                Label("Start Activity", systemImage: "shareplay")
+            }
+//            ShareLink(item: identifiedObject, preview: SharePreview(identifiedObject.origin))
+        }
+        .task {
+            for await session in ObserveTogether.sessions() {
+                
+                session.join()
+            }
+        }
+        .sheet(isPresented: $showActivitySharingSheet) {
+            GroupActivitySharingSheet()
+        }
     }
     
     func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
@@ -72,6 +93,19 @@ struct CameraView: View {
             return CGRect(x: scaledX, y: scaledY, width: scaledWidth, height: scaledHeight)
         }
 
+    func startActivity() {
+        // Does this need to be created outside of view
+        
+        let stateObserver = GroupStateObserver()
+        
+        if stateObserver.isEligibleForGroupSession {
+            
+        } else {
+            // GroupActivitySharingController
+            showActivitySharingSheet.toggle()
+        }
+        
+    }
     
 }
 
