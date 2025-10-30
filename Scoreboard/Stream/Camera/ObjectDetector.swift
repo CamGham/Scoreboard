@@ -10,15 +10,15 @@ import Vision
 
 class ObjectDetector {
     static func createDetector() async throws -> VNCoreMLModel {
-        guard let customModel = try? Scoreboard_1(configuration: .init()).model else {
-            throw ObjectError.creation
-        }
-//        guard let yoloModel = try? YOLOv3Int8LUT(configuration: .init()).model else {
+//        guard let customModel = try? ScoreboardV2_1(configuration: .init()).model else {
 //            throw ObjectError.creation
 //        }
+        guard let yoloModel = try? YOLOv3Int8LUT(configuration: .init()).model else {
+            throw ObjectError.creation
+        }
 
-        var model = try VNCoreMLModel(for: customModel)
-        model.featureProvider = ThresholdProvider()
+        var model = try VNCoreMLModel(for: yoloModel)
+//        model.featureProvider = ThresholdProvider()
         
         return model
     }
