@@ -185,6 +185,10 @@ actor CaptureService {
         }
         return previewLayer
     }
+    
+    func stop() {
+        captureSession.stopRunning()
+    }
 }
 
 enum CameraError: Error {

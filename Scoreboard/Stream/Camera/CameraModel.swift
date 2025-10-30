@@ -85,25 +85,6 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         }
     }
     
-    
-    func drawVisionRequestResults(_ results: [Any]) {
-        var tempRects: [RectangleData] = []
-        
-        let observations = results.compactMap { observation in
-            observation as? VNRecognizedObjectObservation
-        }
-        
-        
-        // assume one ball
-        let ball = observations.filter { ob in
-            ob.labels.first?.identifier == "ball"
-        }.first
-        
-        let players = observations.filter { ob in
-            ob.labels.first?.identifier == "person"
-        }
-    }
-    
     func makeObservations(pixelBuffer: CVImageBuffer) throws {
         let orientation = exifOrientationFromDeviceOrientation()
         let vnHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
@@ -131,14 +112,6 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
                     colour: Color.red)
             )
         }
-        
-
-        
-//        Task { @MainActor in
-//            rects = tempRects
-//        }
-        
-        
     }
     
     public func exifOrientationFromDeviceOrientation() -> CGImagePropertyOrientation {
