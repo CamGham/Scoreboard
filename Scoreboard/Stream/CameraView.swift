@@ -37,29 +37,27 @@ struct CameraView: View {
                     Text("\(rectData.label) \(rectData.id)")
                         .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
                         .foregroundColor(.red)
-//                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-//                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-//                        .foregroundColor(.red)
+                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
+                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
+                        .foregroundColor(.red)
                 }
             }
         }
         .overlay(alignment: .topLeading) {
             Button("Close") {
-                dismissCam.toggle()
+                Task {
+                    await camera.stop()
+                    dismissCam.toggle()
+                }
             }
         }
     }
     
     func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
-        let scaleX = viewSize.width / camera.bufferSize.width
-            let scaleY = viewSize.height / camera.bufferSize.height
-            let scaledWidth = rect.width * scaleX
-            let scaledHeight = rect.height * scaleY
-            let scaledX = rect.origin.x * scaleX
-            let scaledY = viewSize.height - (rect.origin.y * scaleY) - scaledHeight
-            
-            return CGRect(x: scaledX, y: scaledY, width: scaledWidth, height: scaledHeight)
-        }
+        let scale = CGAffineTransform.identity.scaledBy(x: viewSize.width, y: viewSize.height)
+        let transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -viewSize.height)
+        return rect.applying(scale).applying(transform)
+    }
 
     func startActivity() {
         // Does this need to be created outside of view
