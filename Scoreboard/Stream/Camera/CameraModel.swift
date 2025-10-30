@@ -21,11 +21,17 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     var canPredict = true
     let predictionTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
     
-    var bufferSize: CGSize = .zero
-    var rects: [RectangleData] = []
-    var rectangles = [UUID: RectangleData]()
-    var observations = [UUID: VNDetectedObjectObservation]()
     var visionModel: VNCoreMLModel?
+    private var requests = [VNRequest]()
+    var rects: [RectangleData] = []
+    
+    // TODO: Track objects over multiple frames
+//    var rectangles = [UUID: RectangleData]()
+//    var observations = [UUID: VNDetectedObjectObservation]()
+//    let sequenceHandler = VNSequenceRequestHandler()
+//    var startingOb: VNDetectedObjectObservation?
+//    let requestHandler = VNSequenceRequestHandler()
+    
     
     var gameState = GameState()
 
@@ -227,25 +233,6 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         return exifOrientation
     }
     
-    private func observeOrientation() {
-        Task {
-            await updatePixelBufferSize()
-            for await orientation in NotificationCenter.default.notifications(named: UIDevice.orientationDidChangeNotification) {
-                await updatePixelBufferSize()
-            }
-        }
-    }
-    
-    func updatePixelBufferSize() async {
-        print("updatin orientation")
-        do {
-            try await captureService.updateBufferDimensions()
-            bufferSize = await captureService.bufferSize
-        } catch {
-            
-        }
-    }
-
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let buf = sampleBuffer.imageBuffer else { return }
 
