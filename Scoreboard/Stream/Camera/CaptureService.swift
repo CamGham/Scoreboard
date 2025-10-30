@@ -20,8 +20,6 @@ actor CaptureService {
     
     private let backCameraDiscoverSession: AVCaptureDevice.DiscoverySession
     
-    // Image size
-    var bufferSize: CGSize = .zero
     let videoQueue = DispatchQueue(label: "VideoQueue", qos: .userInitiated, autoreleaseFrequency: .workItem)
     
     
@@ -71,7 +69,6 @@ actor CaptureService {
         }
         
         try setup()
-        var asjdoasd = "asdasdasdmk"
         captureSession.startRunning()
     }
     
@@ -128,16 +125,7 @@ actor CaptureService {
             
             // image size for rects
             let captureConnection = liveOutput.connection(with: .video)
-            captureConnection?.isVideoMirrored = true
             captureConnection?.isEnabled = true
-            do {
-                try updateBufferDimensions()
-            } catch {
-                captureSession.commitConfiguration()
-                
-                print(error)
-                throw CameraError.setupFailed
-            }
             
             captureSession.commitConfiguration()
             
@@ -146,21 +134,6 @@ actor CaptureService {
         }
     }
     
-    func updateBufferDimensions() throws {
-        guard let camera = cameras.first else { throw CameraError.videoDeviceUnavailable }
-        
-        do {
-            try camera.lockForConfiguration()
-            let dimensions = CMVideoFormatDescriptionGetDimensions((camera.activeFormat.formatDescription))
-            bufferSize.width = CGFloat(dimensions.width)
-            bufferSize.height = CGFloat(dimensions.height)
-            camera.unlockForConfiguration()
-        } catch {
-            
-            print(error)
-            throw CameraError.setupFailed
-        }
-    }
     
     private func createRotationCoordinator(for device: AVCaptureDevice) {
         // Create a new rotation coordinator for this device.
