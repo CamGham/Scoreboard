@@ -12,19 +12,22 @@ struct PreviousGameStats: View {
     
     var body: some View {
         VStack(alignment: .leading) {
-            Text("Sundays' game")
-                .font(.headline)
-            Text(Date.now.formatted(date: .long, time: .shortened))
-                .font(.footnote)
             
-            // Game
-            GameView(
-                teamOne: gameModel.teamOneStats,
-                teamTwo: gameModel.teamTwoStats
-            )
-            .padding(.vertical)
-            
-            
+            GroupBox {
+                Text("Sundays' game")
+                    .font(.headline)
+                Text(Date.now.formatted(date: .long, time: .shortened))
+                    .font(.footnote)
+                
+                // Game
+                GameView(
+                    teamOne: gameModel.teamOneStats,
+                    teamTwo: gameModel.teamTwoStats
+                )
+                .padding(.vertical)
+                
+            }
+            .groupBoxStyle(CustomGroupBox())
             
             // Player
             VStack(alignment: .leading) {
@@ -39,6 +42,8 @@ struct PreviousGameStats: View {
                             Text("1")
                                 .font(.title3.bold())
                         }
+                    
+                    // TODO: use photo gen for characters - monster, or luney tunes style
                     
                     Spacer()
                     
