@@ -18,24 +18,26 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     var previewSource: PreviewSource { captureService.previewSource }
     let captureService = CaptureService()
     
-    var canPredict = true
-    let predictionTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+    // should look for new objects every 10 sec
+    var shouldPredict = true
+    let predictionTimer = Timer.publish(every: 10.0, on: .main, in: .common).autoconnect()
+    // can run observations every 0.05 sec to avoid over-processing
+    var canObserve = true
+    let observationTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+    var dontCareAboutPerformance = true // override observation limit
     
+    // Object detection
     var visionModel: VNCoreMLModel?
     private var requests = [VNRequest]()
     var rects: [RectangleData] = []
     
-    // TODO: Track objects over multiple frames
-//    var rectangles = [UUID: RectangleData]()
-//    var observations = [UUID: VNDetectedObjectObservation]()
-//    let sequenceHandler = VNSequenceRequestHandler()
-//    var startingOb: VNDetectedObjectObservation?
-//    let requestHandler = VNSequenceRequestHandler()
+    // Track objects over multiple frames
+    let seqHandler = VNSequenceRequestHandler()
+    var trackingRequests = [VNRequest]()
+    var trackedRects: [RectangleData] = []
+    var rectangles = [UUID: RectangleData]()
+    var observations = [UUID: VNDetectedObjectObservation]()
     
-    
-    var gameState = GameState()
-
- 
     override init() {
         super.init()
         
@@ -71,11 +73,41 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     
     func setupVision(model: VNCoreMLModel)  {
         do {
+            // === Setup recognition request for objects defined by input model ===
+            // pixel buffer stream camera causes a new VNImageRequestHandler to be created
+            // this runs the following completionHander code that:
+            //      Initiates a new array of tracking requests + UI draws on every object detected
             let objectRecognition = VNCoreMLRequest(model: model, completionHandler: { (request, error) in
-                Task {
-                    if let results = request.results {
-                        await self.drawVisionRequestResults(results)
-                    }
+                // Clear any previous 'initial' object detections
+                Task { @MainActor in
+                    self.rects.removeAll()
+                }
+                
+                // iterate through new requests
+                if let results = request.results as? [VNRecognizedObjectObservation] {
+                    
+                    // WARNING
+                    // TODO: this resets the trackingRequests array - so any long living tracks are lost
+                    // Need to implement an update/merge function to map any existing requests (existing track sequences of VNTrackObjectRequest where tracked object has a confidence greater than 0.5) to new requests
+                    self.trackingRequests = results.map({ objectObservation  in
+                        // make request for tracking on this observation
+                        let trackRequest = VNTrackObjectRequest(detectedObjectObservation: objectObservation)
+                        trackRequest.trackingLevel = .accurate
+                        
+                        // on UI update initial bounding boxes
+                        Task { @MainActor in
+                            self.rects.append(
+                                RectangleData(
+                                    id: UUID(),
+                                    rect: objectObservation.boundingBox,
+                                    label: objectObservation.labels[0].identifier,
+                                    confidence: objectObservation.confidence,
+                                    colour: Color.red)
+                                )
+                        }
+                        
+                        return trackRequest
+                    })
                 }
             })
             objectRecognition.imageCropAndScaleOption = .scaleFill
@@ -89,28 +121,49 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         let orientation = exifOrientationFromDeviceOrientation()
         let vnHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
 
-        guard let visionModel else { return }
-        guard canPredict else { return }
-        
         try vnHandler.perform(requests)
     }
-    
-    func drawVisionRequestResults(_ results: [Any]) async {
-        rects.removeAll()
-        for observation in results where observation is VNRecognizedObjectObservation {
-            guard let objectObservation = observation as? VNRecognizedObjectObservation else {
-                continue
+        
+    func trackObservations(pixelBuffer: CVImageBuffer) throws {
+        let orientation = exifOrientationFromDeviceOrientation()
+        do {
+            try seqHandler.perform(trackingRequests, on: pixelBuffer, orientation: orientation)
+            
+            var tempTrackedRects: [RectangleData] = []
+            trackingRequests = trackingRequests.compactMap { req -> VNRequest? in
+                // Only handle VNTrackObjectRequest
+                guard let trackReq = req as? VNTrackObjectRequest else { return nil }
+                guard let newObs = trackReq.results?.first as? VNDetectedObjectObservation else { return nil }
+                
+                // Drop if confidence is too low
+                guard newObs.confidence > 0.3 else { return nil }
+                
+                tempTrackedRects.append(
+                    RectangleData(
+                        id: newObs.uuid,
+                        rect: newObs.boundingBox,
+                        label: "", // Select only the label with the highest confidence.
+                        confidence: newObs.confidence,
+                        colour: Color.green)
+                    )
+                
+                // Update the input observation for continued tracking
+                trackReq.inputObservation = newObs
+                return trackReq
             }
-            // Select only the label with the highest confidence.
-            let topLabelObservation = objectObservation.labels[0]
-            rects.append(
-                RectangleData(
-                    id: UUID(),
-                    rect: objectObservation.boundingBox,
-                    label: topLabelObservation.identifier,
-                    confidence: objectObservation.confidence,
-                    colour: Color.red)
-            )
+            
+            // Update UI with tracked object bounding boxes
+            Task { @MainActor in
+                self.trackedRects = tempTrackedRects
+            }
+            
+            // fallback if we lose all tracks
+            if trackingRequests.isEmpty {
+                shouldPredict = true
+            }
+            
+        } catch {
+            print("Tracking failed")
         }
     }
     
@@ -137,7 +190,13 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         guard let buf = sampleBuffer.imageBuffer else { return }
 
         do {
-            try makeObservations(pixelBuffer: buf)
+            if shouldPredict {
+                shouldPredict = false
+                try makeObservations(pixelBuffer: buf)
+            } else if canObserve || dontCareAboutPerformance {
+                canObserve = false
+                try trackObservations(pixelBuffer: buf)
+            }
         } catch {
             print("Failed to make observations")
         }
