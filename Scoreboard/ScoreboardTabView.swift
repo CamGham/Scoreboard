@@ -12,25 +12,11 @@ struct ScoreboardTabView: View {
     var body: some View {
         TabView(selection: $tabSelection) {
             Tab(Tabs.scoreboard.name, systemImage: Tabs.scoreboard.symbol, value: Tabs.scoreboard) {
-                Text("hello")
+                ScoreboardView()
             }
             
-            Tab(Tabs.analyse.name, systemImage: Tabs.analyse.symbol, value: Tabs.analyse) {
-                CameraView()
-            }
-            
-           
-            
-            Tab(Tabs.profile.name,
-                systemImage: Tabs.profile.symbol, value: Tabs.profile) {
-               
-                
-                List {
-                    Text("Profile")
-//                    Tab(Tabs.history.name, systemImage: Tabs.history.symbol, value: Tabs.history) {
-//                        Text("world")
-//                    }
-                }
+            Tab(Tabs.media.name, systemImage: Tabs.media.symbol, value: Tabs.media) {
+                MediaTypeChooser()
             }
         }
         .tabViewStyle(.sidebarAdaptable)
@@ -39,20 +25,14 @@ struct ScoreboardTabView: View {
 
 enum Tabs: Identifiable, Hashable {
     case scoreboard
-    case analyse
-    case history
-    case profile
+    case media
     
     var id: Int {
         switch self {
         case .scoreboard:
             1
-        case .analyse:
+        case .media:
             2
-        case .history:
-            3
-        case .profile:
-            4
         }
     }
     
@@ -60,12 +40,8 @@ enum Tabs: Identifiable, Hashable {
         switch self {
         case .scoreboard:
             "Dashboard"
-        case .analyse:
+        case .media:
             "Analyse"
-        case .history:
-            "History"
-        case .profile:
-            "Profile"
         }
     }
     
@@ -73,12 +49,8 @@ enum Tabs: Identifiable, Hashable {
         switch self {
         case .scoreboard:
             "basketball.fill"
-        case .analyse:
+        case .media:
             "rectangle.dashed.badge.record"
-        case .history:
-            "list.and.film"
-        case .profile:
-            "person.text.rectangle.fill"
         }
     }
 }
