@@ -8,13 +8,14 @@
 import SwiftUI
 import PhotosUI
 
-struct AnalyseView: View {
+struct MediaTypeChooser: View {
     @State var showLiveCamera = false
     @State var selectedImages: [PhotosPickerItem] = [] {
         didSet {
             
         }
     }
+    
     var body: some View {
         HStack {
             Spacer()
@@ -33,11 +34,11 @@ struct AnalyseView: View {
             Spacer()
         }
         .fullScreenCover(isPresented: $showLiveCamera) {
-            CameraView(dismissCam: $showLiveCamera)
+            CameraView(camera: CameraModel(), dismissCam: $showLiveCamera)
         }
     }
 }
 
 #Preview {
-    AnalyseView()
+    MediaTypeChooser()
 }

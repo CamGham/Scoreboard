@@ -20,9 +20,13 @@ actor CaptureService {
     
     private let backCameraDiscoverSession: AVCaptureDevice.DiscoverySession
     
-    // Image size
-    var bufferSize: CGSize = .zero
     let videoQueue = DispatchQueue(label: "VideoQueue", qos: .userInitiated, autoreleaseFrequency: .workItem)
+    
+    
+    // rotation
+    // An object that monitors video device rotations.
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator!
+    private var rotationObservers = [AnyObject]()
     
     init() {
         
@@ -72,7 +76,8 @@ actor CaptureService {
         do {
             captureSession.beginConfiguration()
             // YOLOv3 only requires 480
-            captureSession.sessionPreset = .vga640x480
+//            captureSession.sessionPreset = .vga640x480
+            captureSession.sessionPreset = .high
             
             // input
             guard let camera = cameras.first else { throw CameraError.videoDeviceUnavailable }
@@ -102,23 +107,25 @@ actor CaptureService {
                 captureSession.commitConfiguration()
                 throw CameraError.setupFailed
             }
-            liveOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)]
+            
+//            liveOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)]
+            // 10 bit
+//            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            
+            //low
+//            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            
+            
             // Set raw pixel output for detector
             liveOutput.setSampleBufferDelegate(captureDelegate, queue: videoQueue)
             videoOutput = liveOutput
             
+            // Configure a rotation coordinator for the default video device.
+            createRotationCoordinator(for: camera)
             
             // image size for rects
             let captureConnection = liveOutput.connection(with: .video)
             captureConnection?.isEnabled = true
-            do {
-                try updateBufferDimensions()
-            } catch {
-                captureSession.commitConfiguration()
-                
-                print(error)
-                throw CameraError.setupFailed
-            }
             
             captureSession.commitConfiguration()
             
@@ -127,20 +134,60 @@ actor CaptureService {
         }
     }
     
-    func updateBufferDimensions() throws {
-        guard let camera = cameras.first else { throw CameraError.videoDeviceUnavailable }
+    
+    private func createRotationCoordinator(for device: AVCaptureDevice) {
+        // Create a new rotation coordinator for this device.
+        rotationCoordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: videoPreviewLayer)
         
-        do {
-            try camera.lockForConfiguration()
-            let dimensions = CMVideoFormatDescriptionGetDimensions((camera.activeFormat.formatDescription))
-            bufferSize.width = CGFloat(dimensions.width)
-            bufferSize.height = CGFloat(dimensions.height)
-            camera.unlockForConfiguration()
-        } catch {
-            
-            print(error)
-            throw CameraError.setupFailed
+        // Set initial rotation state on the preview and output connections.
+        updatePreviewRotation(rotationCoordinator.videoRotationAngleForHorizonLevelPreview)
+        updateCaptureRotation(rotationCoordinator.videoRotationAngleForHorizonLevelCapture)
+        
+        // Cancel previous observations.
+        rotationObservers.removeAll()
+        
+        // Add observers to monitor future changes.
+        rotationObservers.append(
+            rotationCoordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: .new) { [weak self] _, change in
+                guard let self, let angle = change.newValue else { return }
+                // Update the capture preview rotation.
+                Task { await self.updatePreviewRotation(angle) }
+            }
+        )
+        
+        rotationObservers.append(
+            rotationCoordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: .new) { [weak self] _, change in
+                guard let self, let angle = change.newValue else { return }
+                // Update the capture preview rotation.
+                Task { await self.updateCaptureRotation(angle) }
+            }
+        )
+    }
+    
+    private func updatePreviewRotation(_ angle: CGFloat) {
+        let previewLayer = videoPreviewLayer
+        Task { @MainActor in
+            // Set initial rotation angle on the video preview.
+            previewLayer.connection?.videoRotationAngle = angle
         }
+    }
+    
+    private func updateCaptureRotation(_ angle: CGFloat) {
+        // Update the orientation for all output services.
+        
+//        outputServices.forEach { $0.setVideoRotationAngle(angle) }
+    }
+    
+    private var videoPreviewLayer: AVCaptureVideoPreviewLayer {
+        // Access the capture session's connected preview layer.
+        guard let previewLayer = captureSession.connections.compactMap({ $0.videoPreviewLayer }).first else {
+            fatalError("The app is misconfigured. The capture session should have a connection to a preview layer.")
+        }
+        return previewLayer
+    }
+    
+    func stop() {
+        captureSession.stopRunning()
     }
 }
 

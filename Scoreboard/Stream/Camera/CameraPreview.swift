@@ -25,6 +25,11 @@ struct CameraPreview: UIViewRepresentable {
     
     func updateUIView(_ previewView: PreviewView, context: Context) {
         // No-op.
+        
+    }
+    
+    func testUpdate() {
+        source.updateLayer()
     }
     
     /// A class that presents the captured content.
@@ -81,6 +86,8 @@ protocol PreviewSource: Sendable {
     // Connects a preview destination to this source.
     func connect(to target: PreviewTarget)
     
+    func updateLayer()
+    
 }
 
 /// A protocol that passes the app's capture session to the `CameraPreview` view.
@@ -100,5 +107,9 @@ struct DefaultPreviewSource: PreviewSource {
     
     func connect(to target: PreviewTarget) {
         target.setSession(session)
+    }
+    
+    func updateLayer() {
+        
     }
 }
