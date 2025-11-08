@@ -24,7 +24,7 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     // can run observations every 0.05 sec to avoid over-processing
     var canObserve = true
     let observationTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
-    var dontCareAboutPerformance = true // override observation limit
+    var dontCareAboutPerformance = false // override observation limit
     
     // Object detection
     var visionModel: VNCoreMLModel?
@@ -75,7 +75,7 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         do {
             // === Setup recognition request for objects defined by input model ===
             // pixel buffer stream camera causes a new VNImageRequestHandler to be created
-            // this runs the following completionHander code that:
+            // this runs the following completionHander code every 10 sec that:
             //      Initiates a new array of tracking requests + UI draws on every object detected
             let objectRecognition = VNCoreMLRequest(model: model, completionHandler: { (request, error) in
                 // Clear any previous 'initial' object detections
@@ -83,31 +83,59 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
                     self.rects.removeAll()
                 }
                 
-                // iterate through new requests
                 if let results = request.results as? [VNRecognizedObjectObservation] {
                     
-                    // WARNING
-                    // TODO: this resets the trackingRequests array - so any long living tracks are lost
-                    // Need to implement an update/merge function to map any existing requests (existing track sequences of VNTrackObjectRequest where tracked object has a confidence greater than 0.5) to new requests
-                    self.trackingRequests = results.map({ objectObservation  in
-                        // make request for tracking on this observation
-                        let trackRequest = VNTrackObjectRequest(detectedObjectObservation: objectObservation)
-                        trackRequest.trackingLevel = .accurate
-                        
-                        // on UI update initial bounding boxes
-                        Task { @MainActor in
-                            self.rects.append(
-                                RectangleData(
-                                    id: UUID(),
-                                    rect: objectObservation.boundingBox,
-                                    label: objectObservation.labels[0].identifier,
-                                    confidence: objectObservation.confidence,
-                                    colour: Color.red)
-                                )
+                    // prepare new tracking requests (combine existing with new)
+                    var outputTrackingRequests = [VNTrackObjectRequest]()
+                    
+                    var existingTracks = self.trackingRequests
+                    for track in existingTracks {
+                        guard let trackReq = track as? VNTrackObjectRequest else {
+                            continue
                         }
                         
-                        return trackRequest
-                    })
+                        // iou match
+                        // greedily first match at confidence threshold
+                        if let overlapMatch = results.first(where: { newOb in
+                            self.iou(box1: trackReq.inputObservation.boundingBox, box2: newOb.boundingBox) > 0.7
+                        }) {
+                            // updating existing tracking request
+                            trackReq.inputObservation = overlapMatch
+                            outputTrackingRequests.append(trackReq)
+                            
+                        } else if let existingTracking = trackReq.results?.first as? VNDetectedObjectObservation, existingTracking.confidence > 0.5 {
+                            // keep high confidence tracks
+                            outputTrackingRequests.append(trackReq)
+                            
+                        }
+                    }
+                        
+                    for newObservation in results {
+                        let isNew = !outputTrackingRequests.contains { trackRequest in
+                            self.iou(box1: trackRequest.inputObservation.boundingBox, box2: newObservation.boundingBox) > 0.7
+                        }
+                        
+                        if isNew {
+                            // make request for tracking on this observation
+                            let trackRequest = VNTrackObjectRequest(detectedObjectObservation: newObservation)
+                            trackRequest.trackingLevel = .accurate
+                            outputTrackingRequests.append(trackRequest)
+                            
+                            // on UI update initial bounding boxes
+                            Task { @MainActor in
+                                self.rects.append(
+                                    RectangleData(
+                                        id: UUID(),
+                                        rect: newObservation.boundingBox,
+                                        label: newObservation.labels[0].identifier,
+                                        confidence: newObservation.confidence,
+                                        colour: Color.red)
+                                    )
+                            }
+                        }
+                    }
+                    
+                    self.trackingRequests = outputTrackingRequests
                 }
             })
             objectRecognition.imageCropAndScaleOption = .scaleFill
@@ -116,6 +144,26 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
             print("Model loading went wrong: \(error)")
         }
     }
+    
+    func iou(box1: CGRect, box2: CGRect) -> Double {
+        // IoU = area of overlap / area of union
+        let intersectionRect = box1.intersection(box2)
+        if intersectionRect.isNull || intersectionRect.width <= 0 || intersectionRect.height <= 0 {
+            return 0.0
+        }
+        
+        let intersectionArea = intersectionRect.width * intersectionRect.height
+        
+        let box1Area = box1.width * box1.height
+        let box2Area = box2.width * box2.height
+        
+        let unionArea = box1Area + box2Area - intersectionArea
+        
+        let iou = intersectionArea / unionArea
+        return iou
+    }
+    
+    
     
     func makeObservations(pixelBuffer: CVImageBuffer) throws {
         let orientation = exifOrientationFromDeviceOrientation()
@@ -128,12 +176,13 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         let orientation = exifOrientationFromDeviceOrientation()
         do {
             try seqHandler.perform(trackingRequests, on: pixelBuffer, orientation: orientation)
-            
+            print("current tracks: \(trackingRequests.count)")
             var tempTrackedRects: [RectangleData] = []
             trackingRequests = trackingRequests.compactMap { req -> VNRequest? in
                 // Only handle VNTrackObjectRequest
                 guard let trackReq = req as? VNTrackObjectRequest else { return nil }
                 guard let newObs = trackReq.results?.first as? VNDetectedObjectObservation else { return nil }
+                
                 
                 // Drop if confidence is too low
                 guard newObs.confidence > 0.3 else { return nil }
@@ -162,8 +211,9 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
                 shouldPredict = true
             }
             
-        } catch {
-            print("Tracking failed")
+        } catch let error as NSError {
+            
+            print("Tracking failed: \(error.description)")
         }
     }
     
