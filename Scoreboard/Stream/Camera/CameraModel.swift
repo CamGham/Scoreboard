@@ -34,7 +34,7 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     
     // Track objects over multiple frames
     let seqHandler = VNSequenceRequestHandler()
-    var trackingRequests = [VNRequest]()
+    var trackingRequests = [VNTrackObjectRequest]()
     var trackedRects: [RectangleData] = []
     var rectangles = [UUID: RectangleData]()
     var observations = [UUID: VNDetectedObjectObservation]()
@@ -101,7 +101,21 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
                     self.createNewTrackingRequests(
                         newObservations: newObservations,
                         &outputTrackingRequests)
-                    self.trackingRequests = outputTrackingRequests
+                    
+                    
+                    self.trackingRequests = Array(
+                        outputTrackingRequests
+                        // TODO: this is temporary to avoid exceeding track req limit
+                        // In future the game mode will determine what objects to prioritse
+                        // Most cases will be ball, with first closest player from each team,
+                        // could be made two players
+                        // ---------------------------
+                        // Take 6 highest confidence tracks
+                        .sorted { (t1: VNTrackObjectRequest, t2: VNTrackObjectRequest) in
+                            t1.inputObservation.confidence > t2.inputObservation.confidence
+                        }
+                        .prefix(6)
+                    )
                     return
                 }
                 
@@ -153,7 +167,21 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
                     }
                     self.createNewTrackingRequests(newObservations: remainingObservations, &outputTrackingRequests)
                     
-                    self.trackingRequests = outputTrackingRequests
+                    
+                    
+                    self.trackingRequests = Array(
+                        outputTrackingRequests
+                        // TODO: this is temporary to avoid exceeding track req limit
+                        // In future the game mode will determine what objects to prioritse
+                        // Most cases will be ball, with first closest player from each team,
+                        // could be made two players
+                        // ---------------------------
+                        // Take 6 highest confidence tracks
+                        .sorted { (t1: VNTrackObjectRequest, t2: VNTrackObjectRequest) in
+                            t1.inputObservation.confidence > t2.inputObservation.confidence
+                        }
+                        .prefix(6)
+                    )
                 } catch {
                     print("Error occured during tracking merge")
                 }
@@ -217,8 +245,7 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
             try seqHandler.perform(trackingRequests, on: pixelBuffer, orientation: orientation)
             print("current tracks: \(trackingRequests.count)")
             var tempTrackedRects: [RectangleData] = []
-            trackingRequests = Array(
-                trackingRequests.compactMap { trackReq in
+            trackingRequests = trackingRequests.compactMap { trackReq in
                     // Only handle first result
                     guard let newObs = trackReq.results?.first as? VNDetectedObjectObservation else { return nil }
                     
@@ -239,17 +266,7 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
                     trackReq.inputObservation = newObs
                     return trackReq
                 }
-                // TODO: this is temporary to avoid exceeding track req limit
-                // In future the game mode will determine what objects to prioritse
-                // Most cases will be ball, with first closest player from each team,
-                // could be made two players
-                // ---------------------------
-                // Take 6 highest confidence tracks
-                .sorted { (t1: VNTrackObjectRequest, t2: VNTrackObjectRequest) in
-                    t1.inputObservation.confidence > t2.inputObservation.confidence
-                }
-                .prefix(6)
-            )
+            
             
             // Update UI with tracked object bounding boxes
             Task { @MainActor in
