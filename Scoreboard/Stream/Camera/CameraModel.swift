@@ -12,6 +12,7 @@ import Vision
 import Combine
 import UIKit
 import SwiftUI
+import LASwift
 
 @Observable
 final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -24,7 +25,7 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     // can run observations every 0.05 sec to avoid over-processing
     var canObserve = true
     let observationTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
-    var dontCareAboutPerformance = false // override observation limit
+    var dontCareAboutPerformance = true // override observation limit
     
     // Object detection
     var visionModel: VNCoreMLModel?
