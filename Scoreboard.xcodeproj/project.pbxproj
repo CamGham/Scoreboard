@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4279421B2EBF47AB003EDA9F /* LASwift in Frameworks */ = {isa = PBXBuildFile; productRef = 4279421A2EBF47AB003EDA9F /* LASwift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		420E53142C9AC2D200DEDAB4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -65,6 +69,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4279421B2EBF47AB003EDA9F /* LASwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -125,6 +130,7 @@
 			);
 			name = Scoreboard;
 			packageProductDependencies = (
+				4279421A2EBF47AB003EDA9F /* LASwift */,
 			);
 			productName = Scoreboard;
 			productReference = 420E53032C9AC2D100DEDAB4 /* Scoreboard.app */;
@@ -208,6 +214,9 @@
 			);
 			mainGroup = 420E52FA2C9AC2D100DEDAB4;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				427942192EBF47AB003EDA9F /* XCRemoteSwiftPackageReference "LASwift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 420E53042C9AC2D100DEDAB4 /* Products */;
 			projectDirPath = "";
@@ -585,6 +594,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		427942192EBF47AB003EDA9F /* XCRemoteSwiftPackageReference "LASwift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/AlexanderTar/LASwift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.3.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4279421A2EBF47AB003EDA9F /* LASwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 427942192EBF47AB003EDA9F /* XCRemoteSwiftPackageReference "LASwift" */;
+			productName = LASwift;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 420E52FB2C9AC2D100DEDAB4 /* Project object */;
 }
