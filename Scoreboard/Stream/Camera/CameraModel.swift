@@ -178,28 +178,39 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
             try seqHandler.perform(trackingRequests, on: pixelBuffer, orientation: orientation)
             print("current tracks: \(trackingRequests.count)")
             var tempTrackedRects: [RectangleData] = []
-            trackingRequests = trackingRequests.compactMap { req -> VNRequest? in
-                // Only handle VNTrackObjectRequest
-                guard let trackReq = req as? VNTrackObjectRequest else { return nil }
-                guard let newObs = trackReq.results?.first as? VNDetectedObjectObservation else { return nil }
-                
-                
-                // Drop if confidence is too low
-                guard newObs.confidence > 0.3 else { return nil }
-                
-                tempTrackedRects.append(
-                    RectangleData(
-                        id: newObs.uuid,
-                        rect: newObs.boundingBox,
-                        label: "", // Select only the label with the highest confidence.
-                        confidence: newObs.confidence,
-                        colour: Color.green)
-                    )
-                
-                // Update the input observation for continued tracking
-                trackReq.inputObservation = newObs
-                return trackReq
-            }
+            trackingRequests = Array(
+                trackingRequests.compactMap { trackReq in
+                    // Only handle first result
+                    guard let newObs = trackReq.results?.first as? VNDetectedObjectObservation else { return nil }
+                    
+                    
+                    // Drop if confidence is too low
+                    guard newObs.confidence > 0.5 else { return nil }
+                    
+                    tempTrackedRects.append(
+                        RectangleData(
+                            id: newObs.uuid,
+                            rect: newObs.boundingBox,
+                            label: "", // Select only the label with the highest confidence.
+                            confidence: newObs.confidence,
+                            colour: Color.green)
+                        )
+                    
+                    // Update the input observation for continued tracking
+                    trackReq.inputObservation = newObs
+                    return trackReq
+                }
+                // TODO: this is temporary to avoid exceeding track req limit
+                // In future the game mode will determine what objects to prioritse
+                // Most cases will be ball, with first closest player from each team,
+                // could be made two players
+                // ---------------------------
+                // Take 6 highest confidence tracks
+                .sorted { (t1: VNTrackObjectRequest, t2: VNTrackObjectRequest) in
+                    t1.inputObservation.confidence > t2.inputObservation.confidence
+                }
+                .prefix(6)
+            )
             
             // Update UI with tracked object bounding boxes
             Task { @MainActor in
