@@ -9,18 +9,19 @@ import SwiftUI
 import PhotosUI
 
 struct MediaTypeChooser: View {
+    // live camera
     @State var showLiveCamera = false
-    @State var selectedImages: [PhotosPickerItem] = [] {
-        didSet {
-            
-        }
-    }
+    
+    // pre-recorded video
+    @State var showLibrary = false
+    @State var showVideo = false
+    @State var asset: AVURLAsset?
     
     var body: some View {
         HStack {
             Spacer()
-            PhotosPicker(selection: $selectedImages, photoLibrary: .shared()) {
-                Text("Library")
+            Button("Library") {
+                showLibrary.toggle()
             }
             .buttonStyle(.bordered)
             
@@ -35,6 +36,17 @@ struct MediaTypeChooser: View {
         }
         .fullScreenCover(isPresented: $showLiveCamera) {
             CameraView(camera: CameraModel(), dismissCam: $showLiveCamera)
+        }
+        .sheet(isPresented: $showLibrary) {
+            VideoPicker(isPresented: $showLibrary, selectedAsset: $asset)
+        }
+        .onChange(of: asset, { oldValue, newValue in
+            if let newValue {
+                showVideo.toggle()
+            }
+        })
+        .fullScreenCover(isPresented: $showVideo) {
+            VideoView(asset: asset!)
         }
     }
 }
