@@ -67,6 +67,10 @@ class VisionTracker {
                 
                 // prepare new tracking requests (combine existing with new)
                 var outputTrackingRequests = [VNTrackObjectRequest]()
+                // reset sequence handler:
+                //      - can only track 6 simultanuous requests
+                //      - memory consumption ramps up crazy quick when left alive for more than a few seconds
+                self.seqHandler = VNSequenceRequestHandler()
                 
                 var existingTracks = self.trackingRequests
                 if existingTracks.isEmpty { // make initial tracking requests
