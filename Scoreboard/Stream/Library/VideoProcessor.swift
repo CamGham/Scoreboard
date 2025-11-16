@@ -14,9 +14,15 @@ enum VideoError: Error {
     case loading
 }
 
+enum PlaybackState {
+    case pause
+    case resume
+}
+
 @Observable
 class VideoProcessor {
     var currentFrame: Image?
+    var playback = PlaybackState.pause
     
     // video asset
     var videoAsset: AVAsset
@@ -25,6 +31,7 @@ class VideoProcessor {
     // read frames
     var videoReader: AVAssetReader
     var videoAssetReaderOutput: AVAssetReaderTrackOutput
+    var frames = 1
     
     var tracker = VisionTracker()
     
@@ -51,8 +58,6 @@ class VideoProcessor {
         guard let videoTrack = tracks.first else {
             throw VideoError.loading
         }
-        
-        let metadata = try await videoAsset
         
         let videoReader = try AVAssetReader(asset: videoAsset)
         let outputSetting = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
@@ -94,16 +99,16 @@ class VideoProcessor {
     func readNextFrame() -> CVImageBuffer? {
         guard let sampleBuffer = self.videoAssetReaderOutput.copyNextSampleBuffer(),
               let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            playback = .pause
             return nil
         }
         currentFrame = CIImage(cvPixelBuffer: buff).image
         return buff
     }
     
-    func autoReadFrames() async {
+    func play() async {
         do {
-            var frames = 1
-            while true {
+            while playback == .resume {
                 guard let buf = readNextFrame() else {
                     return
                 }

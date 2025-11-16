@@ -49,13 +49,14 @@ struct VideoView: View {
             case .loading, .processing:
                 ProgressView("Loading...")
             case .ready:
-                if let currentFrame = videoProcessor?.currentFrame {
+                if let videoProcessor, let currentFrame = videoProcessor.currentFrame {
                     currentFrame
                         .resizable()
                         .scaledToFit()
+                        .previewInterfaceOrientation(.portrait)
                         .overlay {
                             GeometryReader { geometry in
-                                ForEach(videoProcessor?.tracker.rects ?? []) { rectData in
+                                ForEach(videoProcessor.tracker.rects) { rectData in
                                     let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
                                     Rectangle()
                                         .stroke(rectData.colour, lineWidth: 2)
@@ -68,7 +69,7 @@ struct VideoView: View {
                                         .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
                                         .foregroundColor(.red)
                                 }
-                                ForEach(videoProcessor?.tracker.trackedRects ?? []) { rectData in
+                                ForEach(videoProcessor.tracker.trackedRects) { rectData in
                                     let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
                                     Rectangle()
                                         .stroke(rectData.colour, lineWidth: 2)
@@ -84,12 +85,49 @@ struct VideoView: View {
                             }
                         }
                         .overlay(alignment: .bottom) {
-                            Button("Play") {
-                                Task {
-                                    await videoProcessor?.autoReadFrames()
+                            if #available(iOS 26.0, *) {
+                                Button {
+                                    if videoProcessor.playback == .pause {
+                                        withAnimation {
+                                            videoProcessor.playback = .resume
+                                        }
+                                        Task {
+                                            await videoProcessor.play()
+                                        }
+                                    } else {
+                                        withAnimation {
+                                            videoProcessor.playback = .pause
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
                                 }
+                                .buttonStyle(.glass)
+                                .buttonBorderShape(.circle)
+                                .contentTransition(.symbolEffect(.replace))
+                                .padding(.bottom)
+                            } else {
+                                Button {
+                                    if videoProcessor.playback == .pause {
+                                        withAnimation {
+                                            videoProcessor.playback = .resume
+                                        }
+                                        Task {
+                                            await videoProcessor.play()
+                                        }
+                                    } else {
+                                        withAnimation {
+                                            videoProcessor.playback = .pause
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
+                                }
+                                .buttonStyle(.bordered)
+                                .buttonBorderShape(.circle)
+                                .contentTransition(.symbolEffect(.replace))
+                                .padding(.bottom)
                             }
-                            .padding(.bottom)
                         }
                 }
             }
