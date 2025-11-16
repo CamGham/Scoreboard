@@ -16,7 +16,6 @@ enum VideoError: Error {
 
 @Observable
 class VideoProcessor {
-    
     var currentFrame: Image?
     
     // video asset
@@ -26,6 +25,8 @@ class VideoProcessor {
     // read frames
     var videoReader: AVAssetReader
     var videoAssetReaderOutput: AVAssetReaderTrackOutput
+    
+    var tracker = VisionTracker()
     
     private init(videoAsset: AVAsset,
                      videoTrack: AVAssetTrack,
@@ -38,6 +39,10 @@ class VideoProcessor {
             self.videoAssetReaderOutput = videoAssetReaderOutput
             self.currentFrame = firstFrame
         }
+    
+    func clear() {
+        tracker.clear()
+    }
     
     static func create(videoAsset: AVURLAsset) async throws -> VideoProcessor {
         let _ = try await videoAsset.load(.isPlayable)
@@ -86,12 +91,34 @@ class VideoProcessor {
         return self.videoReader.startReading()
     }
     
-    func readNextFrame() {
+    func readNextFrame() -> CVImageBuffer? {
         guard let sampleBuffer = self.videoAssetReaderOutput.copyNextSampleBuffer(),
               let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return
+            return nil
         }
         currentFrame = CIImage(cvPixelBuffer: buff).image
+        return buff
+    }
+    
+    func autoReadFrames() async {
+        do {
+            var frames = 1
+            while true {
+                guard let buf = readNextFrame() else {
+                    return
+                }
+                frames += 1
+
+                if tracker.shouldPredict || (frames % 300 == 0) {
+                    tracker.shouldPredict = false
+                    try tracker.makeObservations(pixelBuffer: buf)
+                } else if frames % 3 == 0 {
+                    try tracker.trackObservations(pixelBuffer: buf)
+                }
+            }
+        } catch {
+            
+        }
     }
 }
 

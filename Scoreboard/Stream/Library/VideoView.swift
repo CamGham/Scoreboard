@@ -29,6 +29,36 @@ struct VideoView: View {
                 print("error \(error.localizedDescription)")
             }
         }
+        .overlay {
+            GeometryReader { geometry in
+                ForEach(videoProcessor?.tracker.rects ?? []) { rectData in
+                    let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
+                    Rectangle()
+                        .stroke(rectData.colour, lineWidth: 2)
+                        .frame(width: adjustedRect.width, height: adjustedRect.height)
+                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
+                    Text("\(rectData.label) \(rectData.id)")
+                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
+                        .foregroundColor(.red)
+                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
+                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
+                        .foregroundColor(.red)
+                }
+                ForEach(videoProcessor?.tracker.trackedRects ?? []) { rectData in
+                    let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
+                    Rectangle()
+                        .stroke(rectData.colour, lineWidth: 2)
+                        .frame(width: adjustedRect.width, height: adjustedRect.height)
+                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
+                    Text("\(rectData.label) \(rectData.id)")
+                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
+                        .foregroundColor(.red)
+                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
+                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
+                        .foregroundColor(.red)
+                }
+            }
+        }
         .overlay(alignment: .bottom) {
             if videoProcessor == nil {
                 Button("Load") {
@@ -42,13 +72,31 @@ struct VideoView: View {
                 }
                 .padding(.bottom)
             } else {
-                Button("Next") {
-                    videoProcessor?.readNextFrame()
+                HStack(spacing: 20) {
+//                    Button("Next") {
+//                        let _ = videoProcessor?.readNextFrame()
+//                    }
+//                    .disabled(videoProcessor == nil)
+                    Button("Clear") {
+                        videoProcessor?.clear()
+                    }
+                    
+                    
+                    Button("Play") {
+                        Task {
+                            await videoProcessor?.autoReadFrames()
+                        }
+                    }
                 }
-                .disabled(videoProcessor == nil)
                 .padding(.bottom)
             }
         }
+    }
+    
+    func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
+        let scale = CGAffineTransform.identity.scaledBy(x: viewSize.width, y: viewSize.height)
+        let transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -viewSize.height)
+        return rect.applying(scale).applying(transform)
     }
 }
 
