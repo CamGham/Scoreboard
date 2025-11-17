@@ -109,7 +109,8 @@ class VideoProcessor {
     func play() async {
         do {
             while playback == .resume {
-                guard let buf = readNextFrame() else {
+                let orientation = tracker.exifOrientationFromDeviceOrientation()
+                guard let buf = readNextFrame(orientation) else {
                     return
                 }
                 frames += 1
@@ -133,5 +134,35 @@ fileprivate extension CIImage {
         let ciContext = CIContext()
         guard let cgImage = ciContext.createCGImage(self, from: self.extent) else { return nil }
         return Image(decorative: cgImage, scale: 1, orientation: .right)
+    }
+    
+    func toImage(orientation: CGImagePropertyOrientation) -> Image? {
+        let ciContext = CIContext()
+        guard let cgImage = ciContext.createCGImage(self, from: self.extent) else { return nil }
+        
+        return Image(decorative: cgImage, scale: 1, orientation: orientation.toImageOrientation())
+    }
+}
+
+fileprivate extension CGImagePropertyOrientation {
+    func toImageOrientation() -> Image.Orientation {
+        switch self {
+        case .up:
+                .up
+        case .upMirrored:
+                .upMirrored
+        case .down:
+                .down
+        case .downMirrored:
+                .downMirrored
+        case .leftMirrored:
+                .leftMirrored
+        case .right:
+                .right
+        case .rightMirrored:
+                .rightMirrored
+        case .left:
+                .left
+        }
     }
 }

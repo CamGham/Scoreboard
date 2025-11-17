@@ -53,7 +53,6 @@ struct VideoView: View {
                     currentFrame
                         .resizable()
                         .scaledToFit()
-                        .previewInterfaceOrientation(.portrait)
                         .overlay {
                             GeometryReader { geometry in
                                 ForEach(videoProcessor.tracker.rects) { rectData in
