@@ -84,48 +84,50 @@ struct VideoView: View {
                             }
                         }
                         .overlay(alignment: .bottom) {
-                            if #available(iOS 26.0, *) {
-                                Button {
-                                    if videoProcessor.playback == .pause {
-                                        withAnimation {
-                                            videoProcessor.playback = .resume
+                            HStack {
+                                if #available(iOS 26.0, *) {
+                                    Button {
+                                        if videoProcessor.playback == .pause {
+                                            withAnimation {
+                                                videoProcessor.playback = .resume
+                                            }
+                                            Task.detached(priority: .userInitiated) {
+                                                await videoProcessor.play()
+                                            }
+                                        } else {
+                                            withAnimation {
+                                                videoProcessor.playback = .pause
+                                            }
                                         }
-                                        Task {
-                                            await videoProcessor.play()
-                                        }
-                                    } else {
-                                        withAnimation {
-                                            videoProcessor.playback = .pause
-                                        }
+                                    } label: {
+                                        Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
                                     }
-                                } label: {
-                                    Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
-                                }
-                                .buttonStyle(.glass)
-                                .buttonBorderShape(.circle)
-                                .contentTransition(.symbolEffect(.replace))
-                                .padding(.bottom)
-                            } else {
-                                Button {
-                                    if videoProcessor.playback == .pause {
-                                        withAnimation {
-                                            videoProcessor.playback = .resume
+                                    .buttonStyle(.glass)
+                                    .buttonBorderShape(.circle)
+                                    .contentTransition(.symbolEffect(.replace))
+                                    .padding(.bottom)
+                                } else {
+                                    Button {
+                                        if videoProcessor.playback == .pause {
+                                            withAnimation {
+                                                videoProcessor.playback = .resume
+                                            }
+                                            Task.detached(priority: .userInitiated) {
+                                                await videoProcessor.play()
+                                            }
+                                        } else {
+                                            withAnimation {
+                                                videoProcessor.playback = .pause
+                                            }
                                         }
-                                        Task {
-                                            await videoProcessor.play()
-                                        }
-                                    } else {
-                                        withAnimation {
-                                            videoProcessor.playback = .pause
-                                        }
+                                    } label: {
+                                        Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
                                     }
-                                } label: {
-                                    Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
+                                    .buttonStyle(.bordered)
+                                    .buttonBorderShape(.circle)
+                                    .contentTransition(.symbolEffect(.replace))
+                                    .padding(.bottom)
                                 }
-                                .buttonStyle(.bordered)
-                                .buttonBorderShape(.circle)
-                                .contentTransition(.symbolEffect(.replace))
-                                .padding(.bottom)
                             }
                         }
                 }

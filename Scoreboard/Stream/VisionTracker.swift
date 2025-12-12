@@ -72,6 +72,7 @@ class VisionTracker {
                 //      - memory consumption ramps up crazy quick when left alive for more than a few seconds
                 self.seqHandler = VNSequenceRequestHandler()
                 
+                // TODO: maintain a copy of tracking requests that holds the object type - that way we know to research when the ball dissapears
                 var existingTracks = self.trackingRequests
                 if existingTracks.isEmpty { // make initial tracking requests
                     self.createNewTrackingRequests(
@@ -228,16 +229,14 @@ class VisionTracker {
     }
     
     
-    func makeObservations(pixelBuffer: CVImageBuffer) throws {
-        let orientation = exifOrientationFromDeviceOrientation()
+    func makeObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
         let vnHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
         
         try vnHandler.perform(requests)
     }
     
     
-    func trackObservations(pixelBuffer: CVImageBuffer) throws {
-        let orientation = exifOrientationFromDeviceOrientation()
+    func trackObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
         do {
             print("current tracks: \(trackingRequests.count)")
             try seqHandler.perform(trackingRequests, on: pixelBuffer, orientation: orientation)
@@ -290,24 +289,4 @@ class VisionTracker {
             print("Tracking failed: \(error.description)")
         }
     }
-    
-    public func exifOrientationFromDeviceOrientation() -> CGImagePropertyOrientation {
-        let curDeviceOrientation = UIDevice.current.orientation
-        let exifOrientation: CGImagePropertyOrientation
-        
-        switch curDeviceOrientation {
-        case UIDeviceOrientation.portraitUpsideDown:  // Device oriented vertically, home button on the top
-            exifOrientation = .left
-        case UIDeviceOrientation.landscapeLeft:       // Device oriented horizontally, home button on the right
-            exifOrientation = .up
-        case UIDeviceOrientation.landscapeRight:      // Device oriented horizontally, home button on the left
-            exifOrientation = .down
-        case UIDeviceOrientation.portrait:            // Device oriented vertically, home button on the bottom
-            exifOrientation = .right
-        default:
-            exifOrientation = .up
-        }
-        return exifOrientation
-    }
-    
 }

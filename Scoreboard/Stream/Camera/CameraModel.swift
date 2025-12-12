@@ -62,16 +62,36 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         guard let buf = sampleBuffer.imageBuffer else { return }
 
         do {
+            let orientation = exifOrientationFromDeviceOrientation()
             if tracker.shouldPredict {
                 tracker.shouldPredict = false
-                try tracker.makeObservations(pixelBuffer: buf)
+                try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
             } else if tracker.canObserve || dontCareAboutPerformance {
                 tracker.canObserve = false
-                try tracker.trackObservations(pixelBuffer: buf)
+                try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
             }
         } catch {
             print("Failed to make observations")
         }
+    }
+    
+    public func exifOrientationFromDeviceOrientation() -> CGImagePropertyOrientation {
+        let curDeviceOrientation = UIDevice.current.orientation
+        let exifOrientation: CGImagePropertyOrientation
+        
+        switch curDeviceOrientation {
+        case UIDeviceOrientation.portraitUpsideDown:  // Device oriented vertically, home button on the top
+            exifOrientation = .left
+        case UIDeviceOrientation.landscapeLeft:       // Device oriented horizontally, home button on the right
+            exifOrientation = .up
+        case UIDeviceOrientation.landscapeRight:      // Device oriented horizontally, home button on the left
+            exifOrientation = .down
+        case UIDeviceOrientation.portrait:            // Device oriented vertically, home button on the bottom
+            exifOrientation = .right
+        default:
+            exifOrientation = .right
+        }
+        return exifOrientation
     }
 }
 

@@ -33,18 +33,26 @@ class VideoProcessor {
     var videoAssetReaderOutput: AVAssetReaderTrackOutput
     var frames = 1
     
+    // helpers
+    var preferredTransform: CGAffineTransform
+    var trackSize: CGSize
+    
     var tracker = VisionTracker()
     
     private init(videoAsset: AVAsset,
-                     videoTrack: AVAssetTrack,
-                     videoReader: AVAssetReader,
-                     videoAssetReaderOutput: AVAssetReaderTrackOutput,
-                     firstFrame: Image?) {
+                 videoTrack: AVAssetTrack,
+                 videoReader: AVAssetReader,
+                 videoAssetReaderOutput: AVAssetReaderTrackOutput,
+                 firstFrame: Image?,
+                 preferredTransform: CGAffineTransform,
+                 trackSize: CGSize) {
             self.videoAsset = videoAsset
             self.videoTrack = videoTrack
             self.videoReader = videoReader
             self.videoAssetReaderOutput = videoAssetReaderOutput
             self.currentFrame = firstFrame
+            self.preferredTransform = preferredTransform
+            self.trackSize = trackSize
         }
     
     func clear() {
@@ -55,9 +63,13 @@ class VideoProcessor {
         let _ = try await videoAsset.load(.isPlayable)
         
         let tracks = try await videoAsset.loadTracks(withMediaType: .video)
+        
         guard let videoTrack = tracks.first else {
             throw VideoError.loading
         }
+        
+        let trackSize = try await videoTrack.load(.naturalSize)
+        let preferredTransform = try await videoTrack.load(.preferredTransform)
         
         let videoReader = try AVAssetReader(asset: videoAsset)
         let outputSetting = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
@@ -70,11 +82,18 @@ class VideoProcessor {
         videoReader.add(videoAssetReaderOutput)
         videoReader.startReading()
         
-        // Try to read first frame synchronously (optional)
         var firstFrame: Image? = nil
         if let sampleBuffer = videoAssetReaderOutput.copyNextSampleBuffer(),
            let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-            firstFrame = CIImage(cvPixelBuffer: pixelBuffer).image
+            
+            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+            
+            let rotated = ciImage.transformed(by: preferredTransform)
+            let flipped = rotated.transformed(by: CGAffineTransform(scaleX: -1, y: -1))
+            let corrected = flipped.transformed(by:
+                CGAffineTransform(translationX: 0, y: -flipped.extent.height)
+            )
+            firstFrame = corrected.image   
         }
         
         return VideoProcessor(
@@ -82,7 +101,9 @@ class VideoProcessor {
             videoTrack: videoTrack,
             videoReader: videoReader,
             videoAssetReaderOutput: videoAssetReaderOutput,
-            firstFrame: firstFrame
+            firstFrame: firstFrame,
+            preferredTransform: preferredTransform,
+            trackSize: trackSize
         )
     }
     
@@ -102,24 +123,33 @@ class VideoProcessor {
             playback = .pause
             return nil
         }
-        currentFrame = CIImage(cvPixelBuffer: buff).image
+
+        let ciImage = CIImage(cvPixelBuffer: buff)
+        
+        let rotated = ciImage.transformed(by: preferredTransform)
+        let flipped = rotated.transformed(by: CGAffineTransform(scaleX: -1, y: -1)) // neg x for makes portrait work
+        let corrected = flipped.transformed(by:
+            CGAffineTransform(translationX: 0, y: -flipped.extent.height)
+        )
+        currentFrame = corrected.image
+        
+        CMSampleBufferInvalidate(sampleBuffer)
         return buff
     }
     
     func play() async {
         do {
             while playback == .resume {
-                let orientation = tracker.exifOrientationFromDeviceOrientation()
-                guard let buf = readNextFrame(orientation) else {
-                    return
-                }
-                frames += 1
-
-                if tracker.shouldPredict || (frames % 300 == 0) {
-                    tracker.shouldPredict = false
-                    try tracker.makeObservations(pixelBuffer: buf)
-                } else if frames % 3 == 0 {
-                    try tracker.trackObservations(pixelBuffer: buf)
+                try autoreleasepool {
+                    guard let buf = readNextFrame() else { return }
+                    frames += 1
+                    
+                    if tracker.shouldPredict || (frames % 300 == 0) {
+                        tracker.shouldPredict = false
+                        try tracker.makeObservations(pixelBuffer: buf, orientation: .right)
+                    } else if frames % 2 == 0 {
+                        try tracker.trackObservations(pixelBuffer: buf, orientation: .right)
+                    }
                 }
             }
         } catch {
@@ -133,14 +163,7 @@ fileprivate extension CIImage {
     var image: Image? {
         let ciContext = CIContext()
         guard let cgImage = ciContext.createCGImage(self, from: self.extent) else { return nil }
-        return Image(decorative: cgImage, scale: 1, orientation: .right)
-    }
-    
-    func toImage(orientation: CGImagePropertyOrientation) -> Image? {
-        let ciContext = CIContext()
-        guard let cgImage = ciContext.createCGImage(self, from: self.extent) else { return nil }
-        
-        return Image(decorative: cgImage, scale: 1, orientation: orientation.toImageOrientation())
+        return Image(decorative: cgImage, scale: 1)
     }
 }
 
