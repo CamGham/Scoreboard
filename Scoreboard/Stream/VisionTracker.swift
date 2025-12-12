@@ -106,33 +106,37 @@ class VisionTracker {
                 }
                 
                 do {
-                    // create cost matrix of exsitingTracks against new observations
-                    let vectorRows: [Vector] = existingTracks.map { trackReq in
-                        return Vector(
-                            newObservations.map { objectDetection in
-                                let overlap = self.iou(
-                                    box1: trackReq.inputObservation.boundingBox,
-                                    box2: objectDetection.boundingBox
-                                )
-                                return 1.0 - overlap // lowest cost
-                            }
-                        )
-                    }
-                    let costMatrix: Matrix = Matrix(vectorRows)
-                    
-                    // find best matches using Hungarian algorithm
-                    let assignments = try HungarianAlgorithm.findOptimalAssignment(costMatrix)
-                    
-                    // merge best new observations with existing tracks
-                    for index in assignments.rowIndices.indices {
-                        // get the assignment indicies
-                        let trackIndex = assignments.rowIndices[index]
-                        let bestObservationIndex = assignments.columnIndices[index]
+                    if !newObservations.isEmpty {
+                        // create cost matrix of exsitingTracks against new observations
                         
-                        let track = existingTracks[trackIndex]
-                        let bestObservation = newObservations[bestObservationIndex]
-                        track.inputObservation = bestObservation
-                        outputTrackingRequests.append(track)
+                        let vectorRows: [Vector] = existingTracks.map { trackReq in
+                            trackReq.inputObservation.uuid
+                            return Vector(
+                                newObservations.map { objectDetection in
+                                    let overlap = self.iou(
+                                        box1: trackReq.inputObservation.boundingBox,
+                                        box2: objectDetection.boundingBox
+                                    )
+                                    return 1.0 - overlap // lowest cost
+                                }
+                            )
+                        }
+                        let costMatrix: Matrix = Matrix(vectorRows)
+                        
+                        // find best matches using Hungarian algorithm
+                        let assignments = try HungarianAlgorithm.findOptimalAssignment(costMatrix)
+                        
+                        // merge best new observations with existing tracks
+                        for index in assignments.rowIndices.indices {
+                            // get the assignment indicies
+                            let trackIndex = assignments.rowIndices[index]
+                            let bestObservationIndex = assignments.columnIndices[index]
+                            
+                            let track = existingTracks[trackIndex]
+                            let bestObservation = newObservations[bestObservationIndex]
+                            track.inputObservation = bestObservation
+                            outputTrackingRequests.append(track)
+                        }
                     }
                     
                     // if existingTracks.count > newObservations.count we will have left over tracking requests
