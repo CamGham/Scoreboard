@@ -200,11 +200,34 @@ class VisionTracker {
     }
     
     
-    private func createNewTrackingRequests(newObservations: [VNRecognizedObjectObservation], _ outputTrackingRequests: inout [VNTrackObjectRequest]) {
+    private func createNewTrackingRequests(newObservations: [VNRecognizedObjectObservation], _ outputTrackingRequests: inout [TypedTrackRequest]) {
         for o in newObservations {
+            if self.hoop.isEmpty && o.labels.first?.identifier == "Rim" {
+                // on UI update initial bounding boxes
+                Task { @MainActor in
+                    self.hoop.append(
+                        RectangleData(
+                            id: UUID(),
+                            rect: o.boundingBox,
+                            label: o.labels[0].identifier,
+                            confidence: o.confidence,
+                            colour: Color.red)
+                    )
+                }
+                continue
+            }
+            
             // make request for tracking on this observation
-            let trackRequest = VNTrackObjectRequest(detectedObjectObservation: o)
-            trackRequest.trackingLevel = .accurate
+            var trackType: ObjectType {
+                if o.labels.first!.identifier == "Basketball" {
+                    return .ball
+                } else {
+                    return .player
+                }
+            }
+            
+            let trackRequest = TypedTrackRequest(observation: o, type: trackType)
+            trackRequest.request.trackingLevel = .accurate
             outputTrackingRequests.append(trackRequest)
             
             // on UI update initial bounding boxes
@@ -215,7 +238,7 @@ class VisionTracker {
                         rect: o.boundingBox,
                         label: o.labels[0].identifier,
                         confidence: o.confidence,
-                        colour: Color.red)
+                        colour: Color.red.opacity(0.2))
                 )
             }
         }
