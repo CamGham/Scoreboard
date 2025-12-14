@@ -13,9 +13,15 @@ enum ObjectType: String {
     case player = "Player"
 }
 
-class TypedTrackRequest {
+class TypedTrackRequest: Equatable, Identifiable {
+    static func == (lhs: TypedTrackRequest, rhs: TypedTrackRequest) -> Bool {
+        lhs.type == rhs.type && rhs.id == lhs.id
+    }
+    
     let type: ObjectType
     let request: VNTrackObjectRequest
+    
+    let id = UUID()
     
     var lowConfidenceFrames = 0
     

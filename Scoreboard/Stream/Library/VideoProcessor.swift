@@ -144,11 +144,18 @@ class VideoProcessor {
                     guard let buf = readNextFrame() else { return }
                     frames += 1
                     
-                    if tracker.shouldPredict || (frames % 300 == 0) {
-                        tracker.shouldPredict = false
+                    if tracker.shouldPredict || (frames % 150 == 0) {
+                        tracker.shouldPredict = true
                         try tracker.makeObservations(pixelBuffer: buf, orientation: .right)
-                    } else if frames % 2 == 0 {
+                    } else {
+                        
                         try tracker.trackObservations(pixelBuffer: buf, orientation: .right)
+                    
+                        if frames % 15 == 0 {
+                            if !tracker.shouldPredict && tracker.shouldPredictBall {
+                                try tracker.makeObservations(pixelBuffer: buf, orientation: .right)
+                            }
+                        }   
                     }
                 }
             }

@@ -59,14 +59,16 @@ class VisionTracker {
         // this runs the following completionHander code every 10 sec that:
         //      Initiates a new array of tracking requests + UI draws on every object detected
         let objectRecognition = VNCoreMLRequest(model: model, completionHandler: { (request, error) in
-            // Clear any previous 'initial' object detections
-            Task { @MainActor in
-                self.rects.removeAll()
-            }
             
             let runFullObservation = self.shouldPredict
             if runFullObservation {
+                // Clear any previous 'initial' object detections
+                Task { @MainActor in
+                    self.rects.removeAll()
+                }
+                
                 self.shouldPredict = false
+                
                 // reset sequence handler:
                 //      - can only track 6 simultanuous requests
                 //      - memory consumption ramps up crazy quick when left alive for more than a few seconds
@@ -76,7 +78,7 @@ class VisionTracker {
             if let results = request.results as? [VNRecognizedObjectObservation] {
                 // filter minimum confidence
                 var newObservations = results.filter { objDet in
-                    objDet.confidence > 0.5
+                    objDet.confidence > 0.6
                 }
                 guard !newObservations.isEmpty else {
                     return
@@ -124,16 +126,39 @@ class VisionTracker {
                     return
                 }
                 
+                if !runFullObservation {
+                    let balls = newObservations.filter { ob in
+                        ob.labels.first!.identifier == "Basketball"
+                    }
+                    if balls.isEmpty {
+                        return
+                    }
+                    self.shouldPredictBall = false
+                    self.createNewTrackingRequests(newObservations: balls, &outputTrackingRequests)
+                    
+                    if self.trackingRequests.count < 6 {
+                        self.trackingRequests.append(contentsOf: outputTrackingRequests)
+                    } else {
+                        print("NEED TO WORK OUT THIS")
+                    }
+                    return
+                }
+                
                 do {
+                    // TODO: update matrix to work with new tracks
+                    // Maybe this is cause of players being assigned as 'ball'?
                     if !newObservations.isEmpty {
                         // create cost matrix of exsitingTracks against new observations
                         
                         let vectorRows: [Vector] = existingTracks.map { trackReq in
-                            trackReq.inputObservation.uuid
                             return Vector(
                                 newObservations.map { objectDetection in
+                                    if trackReq.type.rawValue != objectDetection.labels.first!.identifier {
+                                        return 1.0 // only calculate matches if the objects are the same type
+                                    }
+                                    
                                     let overlap = self.iou(
-                                        box1: trackReq.inputObservation.boundingBox,
+                                        box1: trackReq.request.inputObservation.boundingBox,
                                         box2: objectDetection.boundingBox
                                     )
                                     return 1.0 - overlap // lowest cost
@@ -153,7 +178,7 @@ class VisionTracker {
                             
                             let track = existingTracks[trackIndex]
                             let bestObservation = newObservations[bestObservationIndex]
-                            track.inputObservation = bestObservation
+                            track.request.inputObservation = bestObservation
                             outputTrackingRequests.append(track)
                         }
                     }
@@ -162,43 +187,40 @@ class VisionTracker {
                     // continue any remaining tracks
                     for trackReq in existingTracks{
                         if !outputTrackingRequests.contains(where:
-                                                                {$0.inputObservation.uuid == trackReq.inputObservation.uuid}) {
+                                                                {$0.request.inputObservation.uuid == trackReq.request.inputObservation.uuid}) {
                             outputTrackingRequests.append(trackReq)
                         }
                     }
                     
-                    // if existingTracks.count < newObservations.count we will have left over new observationd
+                    // if existingTracks.count < newObservations.count we will have left over new observations
                     // create new tracking from remainging observations
                     let remainingObservations = newObservations.filter { ob in
                         return !outputTrackingRequests.contains { outputReq in
-                            outputReq.inputObservation.uuid == ob.uuid
+                            outputReq.request.inputObservation.uuid == ob.uuid
                         }
                     }
+                    
                     self.createNewTrackingRequests(newObservations: remainingObservations, &outputTrackingRequests)
                     
                     
                     
-                    let finalTracks = Array(
-                        outputTrackingRequests
-                        // TODO: this is temporary to avoid exceeding track req limit
-                        // In future the game mode will determine what objects to prioritse
-                        // Most cases will be ball, with first closest player from each team,
-                        // could be made two players
-                        // ---------------------------
-                        // Take 6 highest confidence tracks
-                            .sorted { (t1: VNTrackObjectRequest, t2: VNTrackObjectRequest) in
-                                t1.inputObservation.confidence > t2.inputObservation.confidence
-                            }
-                            .prefix(6)
-                    )
-                    // Remove zombies
-                    print("Remaining = \(outputTrackingRequests.count - finalTracks.count)")
-                    outputTrackingRequests.removeAll { req in
-                        finalTracks.contains { req in
-                            req == req
+                    let ballTrack = outputTrackingRequests
+                        .filter { $0.type == .ball }
+                        .max(by: { $0.request.inputObservation.confidence < $1.request.inputObservation.confidence })
+
+                    
+                    let playerTracks = outputTrackingRequests
+                        .filter { $0.type == .player }
+                        .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
+                        .prefix(5)
+                    
+                    let finalTracks: [TypedTrackRequest] = {
+                        if let ball = ballTrack {
+                            return [ball] + playerTracks.prefix(5)
+                        } else {
+                            return Array(playerTracks.prefix(5))
                         }
-                    }
-                    print("After: \(outputTrackingRequests.count)")
+                    }()
                     self.trackingRequests = finalTracks
                     
                 } catch {
@@ -295,7 +317,8 @@ class VisionTracker {
                     
                     if trackReq.lowConfidenceFrames >= 5 {
                         trackReq.request.isLastFrame = true
-                        if trackReq.type == .ball {
+                        if trackReq.type == .ball && !tracksContainBallAfter(removing: trackReq) {
+                            print("Lost all balls")
                             shouldPredictBall = true
                         }
                         return nil
@@ -311,17 +334,35 @@ class VisionTracker {
                     
                     if trackReq.lowConfidenceFrames >= 5 {
                         trackReq.request.isLastFrame = true
-                        if trackReq.type == .ball {
+                        if trackReq.type == .ball && !tracksContainBallAfter(removing: trackReq) {
+                            print("Lost all balls")
                             shouldPredictBall = true
                         }
                         return nil
                     }
-                    
+                    // feed in new observation for new request
+                    trackReq.request.inputObservation = newObs
                     return trackReq
                 }
                
-                // reset lost frame count
-                trackReq.lowConfidenceFrames = 0
+                //Temporary: While model/tracking struggles with false positives, if an object has not moved, increase low confidnce
+                if trackReq.request.inputObservation.boundingBox.origin.isRoughlyEqual(to: newObs.boundingBox.origin) {
+                    print("Not moved: \(trackReq.lowConfidenceFrames)")
+                    
+                    trackReq.lowConfidenceFrames += 1
+                    if trackReq.lowConfidenceFrames >= 5 {
+                        print("Removing track")
+                        trackReq.request.isLastFrame = true
+                        if trackReq.type == .ball && !tracksContainBallAfter(removing: trackReq) {
+                            print("Lost all balls")
+                            shouldPredictBall = true
+                        }
+                        return nil
+                    }
+                } else {
+                    // reset lost frame count
+                    trackReq.lowConfidenceFrames = 0
+                }
                 tempTrackedRects.append(
                     RectangleData(
                         id: newObs.uuid,
@@ -350,5 +391,28 @@ class VisionTracker {
             
             print("Tracking failed: \(error.description)")
         }
+    }
+    
+    private func tracksContainBallAfter(removing trackRequest: TypedTrackRequest) -> Bool {
+        return trackingRequests.contains { trackReq in
+            trackReq.type == .ball && trackReq != trackRequest
+        }
+    }
+}
+
+extension CGPoint {
+    
+    //Coord: (0.21090893215603299, 0.7338885625203451)
+    //Coord: (0.2111816264964916, 0.7341182708740235)
+    //Coord: (0.2111816264964916, 0.7341182708740235)
+    //Coord: (0.21154762550636574, 0.7343326568603515)
+    //Coord: (0.21154762550636574, 0.7343326568603515)
+    
+    // we want small changes like above to be marked essentailly as the same point
+    func isRoughlyEqual(to other: CGPoint) -> Bool {
+        if abs(self.x - other.x) < 0.001 && abs(self.y - other.y) < 0.001 {
+            return true
+        }
+        return false
     }
 }
