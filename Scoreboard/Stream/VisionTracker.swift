@@ -64,51 +64,62 @@ class VisionTracker {
                 self.rects.removeAll()
             }
             
+            let runFullObservation = self.shouldPredict
+            if runFullObservation {
+                self.shouldPredict = false
+                // reset sequence handler:
+                //      - can only track 6 simultanuous requests
+                //      - memory consumption ramps up crazy quick when left alive for more than a few seconds
+                self.seqHandler = VNSequenceRequestHandler()
+            }
+            
             if let results = request.results as? [VNRecognizedObjectObservation] {
                 // filter minimum confidence
-                let newObservations = results.filter { objDet in
-                    objDet.confidence > 0.7
+                var newObservations = results.filter { objDet in
+                    objDet.confidence > 0.5
                 }
                 guard !newObservations.isEmpty else {
                     return
                 }
                 
-                // prepare new tracking requests (combine existing with new)
-                var outputTrackingRequests = [VNTrackObjectRequest]()
-                // reset sequence handler:
-                //      - can only track 6 simultanuous requests
-                //      - memory consumption ramps up crazy quick when left alive for more than a few seconds
-                self.seqHandler = VNSequenceRequestHandler()
                 
-                // TODO: maintain a copy of tracking requests that holds the object type - that way we know to research when the ball dissapears
-                var existingTracks = self.trackingRequests
+                // we dont need to track hoop
+                if !self.hoop.isEmpty {
+                    newObservations = newObservations.filter({ objDet in
+                        objDet.labels.first?.identifier != "Rim"
+                    })
+                }
+                
+                // prepare new tracking requests (combine existing with new)
+                var outputTrackingRequests = [TypedTrackRequest]()
+                
+                let existingTracks = self.trackingRequests
                 if existingTracks.isEmpty { // make initial tracking requests
                     self.createNewTrackingRequests(
                         newObservations: newObservations,
                         &outputTrackingRequests)
                     
                     
-                    let finalTracks = Array(
-                        outputTrackingRequests
-                        // TODO: this is temporary to avoid exceeding track req limit
-                        // In future the game mode will determine what objects to prioritse
-                        // Most cases will be ball, with first closest player from each team,
-                        // could be made two players
-                        // ---------------------------
-                        // Take 6 highest confidence tracks
-                            .sorted { (t1: VNTrackObjectRequest, t2: VNTrackObjectRequest) in
-                                t1.inputObservation.confidence > t2.inputObservation.confidence
-                            }
-                            .prefix(6)
-                    )
-                    // Remove zombies
-                    print("Remaining = \(outputTrackingRequests.count - finalTracks.count)")
-                    outputTrackingRequests.removeAll { req in
-                        finalTracks.contains { req in
-                            req == req
+                    let ballTrack = outputTrackingRequests
+                        .filter { $0.type == .ball }
+                        .max(by: { $0.request.inputObservation.confidence < $1.request.inputObservation.confidence })
+
+                    
+                    let playerTracks = outputTrackingRequests
+                        .filter { $0.type == .player }
+                        .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
+                        .prefix(5)
+                    
+                    let finalTracks: [TypedTrackRequest] = {
+                        if let ball = ballTrack {
+                            // ball always included as track #1
+                            return [ball] + playerTracks.prefix(5)
+                        } else {
+                            // no ball detected → fill all 6 slots with players
+                            return Array(playerTracks.prefix(5))
                         }
-                    }
-                    print("After: \(outputTrackingRequests.count)")
+                    }()
+                    
                     self.trackingRequests = finalTracks
                     return
                 }
