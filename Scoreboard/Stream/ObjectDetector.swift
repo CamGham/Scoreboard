@@ -10,7 +10,7 @@ import Vision
 
 class ObjectDetector {
     static func createDetector() async throws -> VNCoreMLModel {
-        guard let customModel = try? best(configuration: .init()).model else {
+        guard let customModel = try? best5sRefined(configuration: .init()).model else {
             throw ObjectError.creation
         }
         let model = try VNCoreMLModel(for: customModel)
