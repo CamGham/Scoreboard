@@ -195,7 +195,7 @@ class VisionTracker {
                 }
             }
         })
-        objectRecognition.imageCropAndScaleOption = VNImageCropAndScaleOption.scaleFill
+        objectRecognition.imageCropAndScaleOption = VNImageCropAndScaleOption.scaleFit
         self.requests = [objectRecognition]
     }
     
