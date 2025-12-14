@@ -250,52 +250,68 @@ class VisionTracker {
     
     func trackObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
         do {
-            print("current tracks: \(trackingRequests.count)")
-            try seqHandler.perform(trackingRequests, on: pixelBuffer, orientation: orientation)
+            try seqHandler.perform(trackingRequests.map{ $0.request }, on: pixelBuffer, orientation: orientation)
+            
             var tempTrackedRects: [RectangleData] = []
+            
             trackingRequests = trackingRequests.compactMap { trackReq in
                 // Only handle first result
-                guard let newObs = trackReq.results?.first as? VNDetectedObjectObservation else {
-                    trackReq.isLastFrame = true
-                    return nil
+                guard let newObs = trackReq.request.results?.first as? VNDetectedObjectObservation else {
+                    trackReq.lowConfidenceFrames += 1
+                    
+                    if trackReq.lowConfidenceFrames >= 5 {
+                        trackReq.request.isLastFrame = true
+                        if trackReq.type == .ball {
+                            shouldPredictBall = true
+                        }
+                        return nil
+                    }
+                    
+                    return trackReq
                 }
                 
                 
                 // Drop if confidence is too low
-                guard newObs.confidence > 0.5 else {
-                    print("Dropping track")
-                    trackReq.isLastFrame = true
-                    return nil
+                guard newObs.confidence > 0.2 else {
+                    trackReq.lowConfidenceFrames += 1
+                    
+                    if trackReq.lowConfidenceFrames >= 5 {
+                        trackReq.request.isLastFrame = true
+                        if trackReq.type == .ball {
+                            shouldPredictBall = true
+                        }
+                        return nil
+                    }
+                    
+                    return trackReq
                 }
-                // TODO: improve above, by keeping tracks alive for a couple of iteratiosn to see if it can be continued
-                // If object goes out of sight then lets continue the track,
-                // and only remove if it hasnt hit conf thresh after 10 sec???
-                
+               
+                // reset lost frame count
+                trackReq.lowConfidenceFrames = 0
                 tempTrackedRects.append(
                     RectangleData(
                         id: newObs.uuid,
                         rect: newObs.boundingBox,
-                        label: "", // Select only the label with the highest confidence.
+                        label: trackReq.type == .ball ? "Ball" : "Player",
                         confidence: newObs.confidence,
-                        colour: Color.green)
+                        colour: trackReq.type == .ball ? .orange : .green)
                 )
                 
                 // Update the input observation for continued tracking
-                trackReq.inputObservation = newObs
+                trackReq.request.inputObservation = newObs
+                
                 return trackReq
-            }
-            
-            
-            // Update UI with tracked object bounding boxes
-            Task { @MainActor in
-                self.trackedRects = tempTrackedRects
             }
             
             // fallback if we lose all tracks
             if trackingRequests.isEmpty {
                 shouldPredict = true
             }
-            
+
+            // Update UI with tracked object bounding boxes
+            Task { @MainActor in
+                self.trackedRects = tempTrackedRects
+            }
         } catch let error as NSError {
             
             print("Tracking failed: \(error.description)")
