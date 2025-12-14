@@ -19,17 +19,25 @@ class VisionTracker {
     var shouldPredict = true
     var canObserve = true
     
+    // override above prediction/observation for object specifc requiremnts
+    var shouldPredictBall: Bool = true
+    
+    
     // Object detection
     var visionModel: VNCoreMLModel?
     var requests = [VNRequest]()
     var rects: [RectangleData] = []
+    var hoop: [RectangleData] = []
     
     // Track objects over multiple frames
     var seqHandler = VNSequenceRequestHandler()
-    var trackingRequests = [VNTrackObjectRequest]()
+    
+    var trackingRequests = [TypedTrackRequest]()
     var trackedRects: [RectangleData] = []
-    var rectangles = [UUID: RectangleData]()
-    var observations = [UUID: VNDetectedObjectObservation]()
+    
+    //TODO: reID using UUID + feature similarity
+//    var rectangles = [UUID: RectangleData]()
+//    var observations = [UUID: VNDetectedObjectObservation]()
     
     init() {
         Task {
