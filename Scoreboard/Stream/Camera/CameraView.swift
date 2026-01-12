@@ -24,14 +24,14 @@ struct CameraView: View {
             await camera.start()
         }
         .onReceive(camera.predictionTimer, perform: { _ in
-            camera.shouldPredict = true
+            camera.tracker.shouldPredict = true
         })
         .onReceive(camera.observationTimer, perform: { _ in
-            camera.canObserve = true
+            camera.tracker.canObserve = true
         })
         .overlay {
             GeometryReader { geometry in
-                ForEach(camera.rects) { rectData in
+                ForEach(camera.tracker.rects) { rectData in
                     let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
                     Rectangle()
                         .stroke(rectData.colour, lineWidth: 2)
@@ -44,7 +44,7 @@ struct CameraView: View {
                         .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
                         .foregroundColor(.red)
                 }
-                ForEach(camera.trackedRects) { rectData in
+                ForEach(camera.tracker.trackedRects) { rectData in
                     let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
                     Rectangle()
                         .stroke(rectData.colour, lineWidth: 2)
