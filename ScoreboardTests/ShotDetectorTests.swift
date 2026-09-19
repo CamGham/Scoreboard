@@ -540,3 +540,129 @@ struct GameStateTests {
         #expect(state.snapshot.frameID == 50)
     }
 }
+
+// MARK: - Rim box editing
+
+struct RimBoxEditorTests {
+
+    private let bounds = CGSize(width: 1000, height: 600)
+    private let box = CGRect(x: 400, y: 200, width: 200, height: 60)
+    private let hitRadius: CGFloat = 24
+
+    @Test("With no box, any drag starts a new one")
+    func noBoxMeansDraw() {
+        #expect(RimBoxEditor.classify(point: CGPoint(x: 10, y: 10), box: nil, hitRadius: hitRadius) == .draw)
+    }
+
+    @Test("Each mid-edge bubble is grabbed by its own handle")
+    func handlesAreHit() {
+        for handle in RimBoxEditor.Handle.allCases {
+            let grab = RimBoxEditor.classify(
+                point: handle.point(in: box), box: box, hitRadius: hitRadius
+            )
+            #expect(grab == .resize(handle))
+        }
+    }
+
+    @Test("A grab near a corner resizes rather than moves")
+    func handlesWinOverBody() {
+        // Just inside the box but within reach of the leading handle.
+        let nearLeadingEdge = CGPoint(x: box.minX + 6, y: box.midY)
+        #expect(
+            RimBoxEditor.classify(point: nearLeadingEdge, box: box, hitRadius: hitRadius)
+            == .resize(.leading)
+        )
+    }
+
+    @Test("The box body moves, and empty space pans")
+    func bodyMovesAndOutsidePans() {
+        #expect(RimBoxEditor.classify(point: CGPoint(x: 500, y: 230), box: box, hitRadius: hitRadius) == .move)
+        #expect(RimBoxEditor.classify(point: CGPoint(x: 80, y: 500), box: box, hitRadius: hitRadius) == .pan)
+    }
+
+    @Test("Resizing one edge leaves the other three alone")
+    func resizeMovesOnlyOneEdge() {
+        let widened = RimBoxEditor.apply(
+            grab: .resize(.trailing), origin: box,
+            translation: CGSize(width: 50, height: 0),
+            bounds: bounds, minimumSide: 8
+        )
+
+        #expect(widened.maxX == box.maxX + 50)
+        #expect(widened.minX == box.minX)
+        #expect(widened.minY == box.minY)
+        #expect(widened.height == box.height)
+    }
+
+    @Test("An edge cannot be dragged through its opposite")
+    func edgesCannotInvert() {
+        // Yank the leading edge far past the trailing one.
+        let collapsed = RimBoxEditor.apply(
+            grab: .resize(.leading), origin: box,
+            translation: CGSize(width: 10_000, height: 0),
+            bounds: bounds, minimumSide: 8
+        )
+
+        #expect(collapsed.width == 8)
+        #expect(collapsed.width > 0)
+        #expect(collapsed.maxX == box.maxX)
+    }
+
+    @Test("Edges stay inside the frame")
+    func edgesStayInBounds() {
+        let pushedOut = RimBoxEditor.apply(
+            grab: .resize(.leading), origin: box,
+            translation: CGSize(width: -10_000, height: 0),
+            bounds: bounds, minimumSide: 8
+        )
+        #expect(pushedOut.minX == 0)
+
+        let pushedDown = RimBoxEditor.apply(
+            grab: .resize(.bottom), origin: box,
+            translation: CGSize(width: 0, height: 10_000),
+            bounds: bounds, minimumSide: 8
+        )
+        #expect(pushedDown.maxY == bounds.height)
+    }
+
+    @Test("Moving keeps the box's size and stops at the frame edge")
+    func moveClampsWithoutResizing() {
+        let shoved = RimBoxEditor.apply(
+            grab: .move, origin: box,
+            translation: CGSize(width: 10_000, height: 10_000),
+            bounds: bounds, minimumSide: 8
+        )
+
+        // Size preserved — a clamp that shrank the box would silently change the rim.
+        #expect(shoved.width == box.width)
+        #expect(shoved.height == box.height)
+        #expect(shoved.maxX == bounds.width)
+        #expect(shoved.maxY == bounds.height)
+    }
+
+    @Test("A move and its inverse return the box exactly")
+    func moveIsReversible() {
+        let there = RimBoxEditor.apply(
+            grab: .move, origin: box, translation: CGSize(width: 37, height: -21),
+            bounds: bounds, minimumSide: 8
+        )
+        let back = RimBoxEditor.apply(
+            grab: .move, origin: there, translation: CGSize(width: -37, height: 21),
+            bounds: bounds, minimumSide: 8
+        )
+        #expect(back == box)
+    }
+
+    @Test("Resizing an edge moves the rim centre by half the change")
+    func resizeShiftsCentreAsExpected() {
+        // The centre is the scoring plane, so where it lands after a resize is the
+        // thing that actually drives verdicts.
+        let widened = RimBoxEditor.apply(
+            grab: .resize(.trailing), origin: box,
+            translation: CGSize(width: 40, height: 0),
+            bounds: bounds, minimumSide: 8
+        )
+        #expect(widened.midX == box.midX + 20)
+        #expect(widened.midY == box.midY)
+    }
+}
