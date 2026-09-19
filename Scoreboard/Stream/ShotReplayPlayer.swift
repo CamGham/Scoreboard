@@ -34,6 +34,14 @@ final class ShotReplayPlayer {
         }
     }
 
+    /// True while the user is dragging the scrubber.
+    ///
+    /// The position is driven by the finger then, not the player, so player ticks must
+    /// not write over it — and the window must not loop, or a drag to the end would
+    /// snap the picture back to the start while the finger is still down.
+    private(set) var isScrubbing = false
+
+    private var wasPlayingBeforeScrub = false
     private var timeObserver: Any?
     private var didFinishLoading = false
 
@@ -111,17 +119,54 @@ final class ShotReplayPlayer {
         isPlaying ? pause() : play()
     }
 
-    /// Frame-accurate seek — zero tolerance, because the overlay is drawn against the
-    /// exact moment and any slack puts the drawn ball off the pictured one.
-    func seek(to seconds: Double) async {
+    /// Seek within the window.
+    ///
+    /// - Parameter precise: zero tolerance, so the overlay lines up with the exact frame
+    ///   shown. Precise seeks decode from the preceding keyframe, which is too slow to do
+    ///   continuously, so a live scrub passes false and only the final position is exact.
+    func seek(to seconds: Double, precise: Bool = true) async {
         let clamped = min(max(seconds, window.lowerBound), window.upperBound)
         currentTime = clamped
 
+        let tolerance: CMTime = precise
+            ? .zero
+            : CMTime(seconds: 0.04, preferredTimescale: 600)
+
         await player.seek(
             to: CMTime(seconds: clamped, preferredTimescale: 600),
-            toleranceBefore: .zero,
-            toleranceAfter: .zero
+            toleranceBefore: tolerance,
+            toleranceAfter: tolerance
         )
+    }
+
+    // MARK: Scrubbing
+
+    func beginScrubbing() {
+        guard !isScrubbing else { return }
+        isScrubbing = true
+        wasPlayingBeforeScrub = isPlaying
+        pause()
+    }
+
+    /// Move to a fraction of the window. Clamped, so the far end of the slider lands on
+    /// the last frame of the shot rather than running past it.
+    func scrub(toProgress fraction: Double) {
+        let clampedFraction = min(max(fraction, 0), 1)
+        let span = window.upperBound - window.lowerBound
+        let target = window.lowerBound + (clampedFraction * span)
+
+        Task { await seek(to: target, precise: false) }
+    }
+
+    func endScrubbing() {
+        guard isScrubbing else { return }
+        isScrubbing = false
+
+        let target = currentTime
+        Task {
+            await seek(to: target, precise: true)
+            if wasPlayingBeforeScrub { play() }
+        }
     }
 
     /// Step one frame at a time, for picking apart a rim contact.
@@ -130,19 +175,25 @@ final class ShotReplayPlayer {
         Task { await seek(to: currentTime + seconds) }
     }
 
-    /// Progress through the window, 0–1.
+    /// Progress through the window, 0–1. Clamped, because a Slider bound to a value
+    /// outside its range misbehaves.
     var progress: Double {
         let span = window.upperBound - window.lowerBound
         guard span > 0 else { return 0 }
-        return (currentTime - window.lowerBound) / span
+        return min(max((currentTime - window.lowerBound) / span, 0), 1)
     }
 
     private func handleTick(_ seconds: Double) {
         guard seconds.isFinite, didFinishLoading else { return }
+
+        // The finger owns the position during a scrub; player ticks would fight it.
+        guard !isScrubbing else { return }
+
         currentTime = seconds
 
-        // Loop the window rather than running on into the rest of the clip.
-        if seconds >= window.upperBound {
+        // Loop only when playback genuinely ran to the end of the window. Looping on any
+        // arrival at the upper bound would also fire on a deliberate seek there.
+        if isPlaying, seconds >= window.upperBound {
             Task {
                 await seek(to: window.lowerBound)
                 if isPlaying { player.rate = rate }

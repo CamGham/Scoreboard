@@ -222,15 +222,17 @@ struct ShotReplayView: View {
             Slider(
                 value: Binding(
                     get: { replay.progress },
-                    set: { fraction in
-                        let span = replay.window.upperBound - replay.window.lowerBound
-                        Task { await replay.seek(to: replay.window.lowerBound + (fraction * span)) }
-                    }
+                    set: { replay.scrub(toProgress: $0) }
                 ),
                 in: 0...1
             ) { editing in
-                // Pause while dragging so playback doesn't fight the scrub.
-                if editing { replay.pause() }
+                // Pausing isn't enough on its own: the player has to be told a scrub is
+                // in progress so its ticks stop writing over the finger's position.
+                if editing {
+                    replay.beginScrubbing()
+                } else {
+                    replay.endScrubbing()
+                }
             }
 
             Text(timecode(replay.window.upperBound))
