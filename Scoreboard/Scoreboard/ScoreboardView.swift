@@ -41,13 +41,17 @@ struct ScoreboardView: View {
                     }
                 }
             }
-            
             .navigationTitle("Scoreboard")
             .background {
-                AnimatedColorsMeshGradientView()
-                    .ignoresSafeArea(.all)
+                if #available(iOS 18.0, *) {
+                    AnimatedColorsMeshGradientView()
+                        .ignoresSafeArea(.all)
+                } else {
+                    // Fallback on earlier versions
+                    Color(.systemBackground)
+                        .ignoresSafeArea(.all)
+                }
             }
-            
         }
     }
 }

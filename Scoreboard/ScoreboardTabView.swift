@@ -10,16 +10,32 @@ import SwiftUI
 struct ScoreboardTabView: View {
     @State var tabSelection: Tabs = .scoreboard
     var body: some View {
-        TabView(selection: $tabSelection) {
-            Tab(Tabs.scoreboard.name, systemImage: Tabs.scoreboard.symbol, value: Tabs.scoreboard) {
-                ScoreboardView()
+        if #available(iOS 18.0, *) {
+            TabView(selection: $tabSelection) {
+                Tab(Tabs.scoreboard.name, systemImage: Tabs.scoreboard.symbol, value: Tabs.scoreboard) {
+                    ScoreboardView()
+                }
+                
+                Tab(Tabs.media.name, systemImage: Tabs.media.symbol, value: Tabs.media) {
+                    MediaTypeChooser()
+                }
             }
-            
-            Tab(Tabs.media.name, systemImage: Tabs.media.symbol, value: Tabs.media) {
+            .tabViewStyle(.sidebarAdaptable)
+        } else {
+            TabView(selection: $tabSelection) {
+                ScoreboardView()
+                    .tabItem {
+                        Label(Tabs.scoreboard.name, systemImage: Tabs.scoreboard.symbol)
+                    }
+                    .tag(Tabs.scoreboard)
+                
                 MediaTypeChooser()
+                    .tabItem {
+                        Label(Tabs.media.name, systemImage: Tabs.media.symbol)
+                    }
+                    .tag(Tabs.media)
             }
         }
-        .tabViewStyle(.sidebarAdaptable)
     }
 }
 
