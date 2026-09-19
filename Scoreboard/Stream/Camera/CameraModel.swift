@@ -63,6 +63,7 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
 
         do {
             let orientation = exifOrientationFromDeviceOrientation()
+            tracker.beginFrame()
             // TODO: upgrade with ball priority tracking
             if tracker.shouldPredict {
                 tracker.shouldPredict = false

@@ -48,6 +48,7 @@ class VideoProcessor {
                  preferredTransform: CGAffineTransform,
                  orientation: CGImagePropertyOrientation,
                  trackSize: CGSize) {
+        print("DEBUG: PROCESSER CREATED")
             self.videoAsset = videoAsset
             self.videoTrack = videoTrack
             self.videoReader = videoReader
@@ -57,6 +58,11 @@ class VideoProcessor {
             self.orientation = orientation
             self.trackSize = trackSize
         }
+    
+    deinit {
+        tracker.clear()
+        print("DEBUG: PROCESSER DESTROYED")
+    }
     
     func clear() {
         tracker.clear()
@@ -148,10 +154,15 @@ class VideoProcessor {
         do {
             while playback == .resume {
                 try autoreleasepool {
-                    guard let buf = readNextFrame() else { return }
+                    guard let buf = readNextFrame() else {
+                        tracker.clear()
+                        return
+                    }
                     frames += 1
-                    
-                    if tracker.shouldPredict || (frames % 10 == 0) {
+                    tracker.beginFrame()
+
+                    //|| (frames % 10 == 0)
+                    if tracker.shouldPredict  {
                         tracker.shouldPredict = true
                         try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
                     } else {
@@ -172,10 +183,15 @@ class VideoProcessor {
     func next() async {
         do {
             try autoreleasepool {
-                guard let buf = readNextFrame() else { return }
+                guard let buf = readNextFrame() else {
+                    tracker.clear()
+                    return
+                }
                 frames += 1
-                
-                if tracker.shouldPredict || (frames % 10 == 0) {
+                tracker.beginFrame()
+
+                //|| (frames % 10 == 0)
+                if tracker.shouldPredict  {
                     tracker.shouldPredict = true
                     try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
                 } else {

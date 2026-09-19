@@ -22,6 +22,12 @@ class VisionTracker {
     // override above prediction/observation for object specifc requiremnts
     var shouldPredictBall: Bool = true
     
+    // Frame identification
+    // Monotonic index of frames processed by VisionTracker, advanced by `beginFrame()`.
+    // This is the single time base for the trajectory fit — it must count video frames,
+    // not milliseconds, because the ballistic thresholds are expressed per frame.
+    private(set) var frameCounter: Int = 0
+    
     
     // Object detection
     var visionModel: VNCoreMLModel?
@@ -39,7 +45,30 @@ class VisionTracker {
 //    var rectangles = [UUID: RectangleData]()
 //    var observations = [UUID: VNDetectedObjectObservation]()
     
+    var objectsToIgnore: [TypedTrackRequest] = []
+    
+    /// Main-actor game state for the UI to read.
+    let gameState = GameState()
+
+    /// Shot detection engine. Runs on the frame-processing thread; results are handed
+    /// to `gameState` on the main actor.
+    let shotTracker = ShotTracker()
+
     init() {
+        print("DEBUG: TRACKER CREATED")
+
+        shotTracker.onSnapshot = { [gameState] snapshot in
+            Task { @MainActor in
+                gameState.apply(snapshot)
+            }
+        }
+
+        shotTracker.onEvent = { [gameState] event in
+            Task { @MainActor in
+                gameState.handle(event)
+            }
+        }
+
         Task {
             await visionModel = try ObjectDetector.createDetector()
             if let visionModel {
@@ -48,8 +77,24 @@ class VisionTracker {
         }
     }
     
+    deinit {
+        print("DEBUG: TRACKER DESTROYED")
+    }
+    
     func clear() {
         seqHandler = VNSequenceRequestHandler()
+        shotTracker.endOfStream(atFrame: frameCounter)
+    }
+
+    /// Open a new video frame. Must be called exactly once per frame, before running
+    /// detection or tracking on it.
+    ///
+    /// The frame index used to live inside `trackObservations`, which meant frames that
+    /// only ran detection never advanced it — several observations would share a frame
+    /// ID and collapse the trajectory fit's time axis.
+    func beginFrame() {
+        frameCounter &+= 1
+        shotTracker.beginFrame(frameCounter)
     }
     
     func setupVision(model: VNCoreMLModel) {
@@ -76,6 +121,22 @@ class VisionTracker {
             }
             
             if let results = request.results as? [VNRecognizedObjectObservation] {
+                
+                if self.hoop.isEmpty && self.frameCounter > 30 * 2 {
+                    print("DEBUG: URGENT RIM")
+                    let hoops = results.filter({
+                        $0.labels.first?.identifier == "Rim"
+                        &&
+                        $0.confidence > 0.5
+                    })
+                    var temp: [TypedTrackRequest] = []
+                    if !hoops.isEmpty {
+                        self.createNewTrackingRequests(
+                            newObservations: hoops,
+                            &temp)
+                    }
+                }
+                
                 // filter minimum confidence
                 var newObservations = results.filter { objDet in
                     objDet.confidence > 0.6
@@ -86,11 +147,13 @@ class VisionTracker {
                 
                 
                 // we dont need to track hoop
-                if !self.hoop.isEmpty {
-                    newObservations = newObservations.filter({ objDet in
-                        objDet.labels.first?.identifier != "Rim"
-                    })
-                }
+                // but check it hasnt moved
+                
+//                if !self.hoop.isEmpty {
+//                    newObservations = newObservations.filter({ objDet in
+//                        objDet.labels.first?.identifier != "Rim"
+//                    })
+//                }
                 
                 // prepare new tracking requests (combine existing with new)
                 var outputTrackingRequests = [TypedTrackRequest]()
@@ -235,17 +298,24 @@ class VisionTracker {
     
     private func createNewTrackingRequests(newObservations: [VNRecognizedObjectObservation], _ outputTrackingRequests: inout [TypedTrackRequest]) {
         for o in newObservations {
-            if self.hoop.isEmpty && o.labels.first?.identifier == "Rim" {
-                // on UI update initial bounding boxes
-                Task { @MainActor in
-                    self.hoop.append(
-                        RectangleData(
-                            id: UUID(),
-                            rect: o.boundingBox,
-                            label: o.labels[0].identifier,
-                            confidence: o.confidence,
-                            colour: Color.red)
-                    )
+            
+            if o.labels.first?.identifier == "Rim" {
+                // The rim is static, so every detection is another sample of the same
+                // object rather than a replacement for it. ShotTracker takes the running
+                // median so the scoring plane doesn't wobble under an in-flight shot.
+                shotTracker.ingestRim(boundingBox: o.boundingBox, frameID: frameCounter)
+
+                if let smoothed = shotTracker.rim {
+                    Task { @MainActor in
+                        self.hoop = [
+                            RectangleData(
+                                id: UUID(),
+                                rect: smoothed.boundingBox,
+                                label: o.labels[0].identifier,
+                                confidence: o.confidence,
+                                colour: Color.red)
+                        ]
+                    }
                 }
                 continue
             }
@@ -260,8 +330,24 @@ class VisionTracker {
             }
             
             let trackRequest = TypedTrackRequest(observation: o, type: trackType)
+            if objectsToIgnore.contains(where: { req in
+                req.request.inputObservation.boundingBox.origin.isRoughlyEqual(to: o.boundingBox.origin)
+            }) {
+                // dont re add an ignored object
+                print("NOT ADDING DUE TO IGNORANCE")
+                continue
+            }
             trackRequest.request.trackingLevel = .accurate
             outputTrackingRequests.append(trackRequest)
+            
+            
+            if trackType == .ball {
+                shotTracker.ingestBall(
+                    boundingBox: o.boundingBox,
+                    confidence: CGFloat(o.confidence),
+                    frameID: frameCounter
+                )
+            }
             
             // on UI update initial bounding boxes
             Task { @MainActor in
@@ -350,9 +436,12 @@ class VisionTracker {
                     print("Not moved: \(trackReq.lowConfidenceFrames)")
                     
                     trackReq.lowConfidenceFrames += 1
-                    if trackReq.lowConfidenceFrames >= 5 {
+                    if trackReq.lowConfidenceFrames >= 3 {
                         print("Removing track")
                         trackReq.request.isLastFrame = true
+                        
+                        objectsToIgnore.append(trackReq)
+                        
                         if trackReq.type == .ball && !tracksContainBallAfter(removing: trackReq) {
                             print("Lost all balls")
                             shouldPredictBall = true
@@ -363,6 +452,15 @@ class VisionTracker {
                     // reset lost frame count
                     trackReq.lowConfidenceFrames = 0
                 }
+                
+                if trackReq.type == .ball {
+                    shotTracker.ingestBall(
+                        boundingBox: newObs.boundingBox,
+                        confidence: CGFloat(newObs.confidence),
+                        frameID: frameCounter
+                    )
+                }
+                
                 tempTrackedRects.append(
                     RectangleData(
                         id: newObs.uuid,
@@ -416,3 +514,4 @@ extension CGPoint {
         return false
     }
 }
+

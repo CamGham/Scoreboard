@@ -42,4 +42,14 @@ struct RingBuffer<T> {
     func suffix(_ n: Int) -> ArraySlice<T> {
         elements.suffix(n)
     }
+    
+    func preffix(_ n: Int) -> ArraySlice<T> {
+        elements.prefix(n)
+    }
+    
+    mutating func clear() {
+        buffer = Array(repeating: nil, count: capacity)
+        head = 0
+        count = 0
+    }
 }

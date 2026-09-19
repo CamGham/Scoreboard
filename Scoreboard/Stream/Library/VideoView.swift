@@ -23,6 +23,8 @@ struct VideoView: View {
     
     @State var showLibrary = false
     @State var assetState = AssetState.unSelected
+    
+    @State var showHistory = false
     var body: some View {
         VStack {
             switch assetState {
@@ -61,9 +63,7 @@ struct VideoView: View {
                                         .stroke(rectData.colour, lineWidth: 2)
                                         .frame(width: adjustedRect.width, height: adjustedRect.height)
                                         .position(x: adjustedRect.midX, y: adjustedRect.midY)
-//                                    Text("\(rectData.label) \(rectData.id)")
-//                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-//                                        .foregroundColor(.red)
+
                                     Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
                                         .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
                                         .foregroundColor(.red)
@@ -74,26 +74,69 @@ struct VideoView: View {
                                         .stroke(rectData.colour, lineWidth: 2)
                                         .frame(width: adjustedRect.width, height: adjustedRect.height)
                                         .position(x: adjustedRect.midX, y: adjustedRect.midY)
-//                                    Text("\(rectData.label) \(rectData.id)")
-//                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-//                                        .foregroundColor(.red)
+                                    
                                     Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
                                         .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
                                         .foregroundColor(.red)
                                 }
-//                                ForEach(videoProcessor.tracker.trackedRects) { rectData in
-//                                    let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-//                                    Rectangle()
-//                                        .stroke(rectData.colour, lineWidth: 2)
-//                                        .frame(width: adjustedRect.width, height: adjustedRect.height)
-//                                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
-////                                    Text("\(rectData.label) \(rectData.id)")
-////                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-////                                        .foregroundColor(.red)
-//                                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-//                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-//                                        .foregroundColor(.red)
-//                                }
+                                let gameState = videoProcessor.tracker.gameState
+
+                                // Live ball position. `center` is a true centre now, so
+                                // the circle is built symmetrically around it.
+                                if let currentBall = gameState.ballHistory.last {
+                                    let ballRect = CGRect(
+                                        x: currentBall.center.x - currentBall.radius,
+                                        y: currentBall.center.y - currentBall.radius,
+                                        width: currentBall.radius * 2,
+                                        height: currentBall.radius * 2
+                                    )
+                                    let adjustedRect = adjustRectForView(rect: ballRect, viewSize: geometry.size)
+                                    Circle()
+                                        .stroke(.white, lineWidth: 2)
+                                        .frame(width: adjustedRect.width, height: adjustedRect.height)
+                                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
+                                }
+
+                                // Fitted arc, drawn only while a shot is live.
+                                if !gameState.arcPoints.isEmpty {
+                                    Path { path in
+                                        let points = gameState.arcPoints.map {
+                                            normalizedToView($0, viewSize: geometry.size)
+                                        }
+                                        guard let first = points.first else { return }
+                                        path.move(to: first)
+                                        for point in points.dropFirst() {
+                                            path.addLine(to: point)
+                                        }
+                                    }
+                                    .stroke(Color.yellow, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                                }
+
+                                // The scoring plane the make/miss verdict is measured against.
+                                if let hoopGeometry = gameState.rim {
+                                    let ellipseRect = adjustedEllipseFrame(
+                                        center: hoopGeometry.center,
+                                        radiusX: hoopGeometry.horizontalRadius,
+                                        radiusY: hoopGeometry.verticalRadius,
+                                        viewSize: geometry.size
+                                    )
+
+                                    Path { path in
+                                        path.addEllipse(in: ellipseRect)
+                                    }
+                                    .stroke(Color.orange, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+
+                                    Path { path in
+                                        let y = (1 - hoopGeometry.scoringPlaneY) * geometry.size.height
+                                        path.move(to: CGPoint(x: hoopGeometry.leftX * geometry.size.width, y: y))
+                                        path.addLine(to: CGPoint(x: hoopGeometry.rightX * geometry.size.width, y: y))
+                                    }
+                                    .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                                }
+
+                                LiveShotReadout(gameState: gameState)
+                                    .position(x: geometry.size.width / 2, y: 40)
+
                                 if let hoop = videoProcessor.tracker.hoop.first {
                                     let adjustedRect = adjustRectForView(rect: hoop.rect, viewSize: geometry.size)
                                     Rectangle()
@@ -109,6 +152,29 @@ struct VideoView: View {
                                 }
                             }
                         }
+                        .overlay(alignment: .bottom, content: {
+                            HStack {
+                                Spacer()
+                                if #available(iOS 26.0, *) {
+                                    Button {
+                                        showHistory.toggle()
+                                    } label: {
+                                        Image(systemName: "list.clipboard")
+                                    }
+                                    .buttonStyle(.glass)
+                                    .padding()
+                                    
+                                } else {
+                                    Button {
+                                        showHistory.toggle()
+                                    } label: {
+                                        Image(systemName: "list.clipboard")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .padding()
+                                }
+                            }
+                        })
                         .overlay(alignment: .bottom) {
                             HStack {
                                 if #available(iOS 26.0, *) {
@@ -154,12 +220,35 @@ struct VideoView: View {
                                     .contentTransition(.symbolEffect(.replace))
                                     .padding(.bottom)
                                 }
+                                
+                                if #available(iOS 26.0, *) {
+                                    Button {
+                                        Task {
+                                            await videoProcessor.next()
+                                        }
+                                    } label: {
+                                        Text("next")
+                                    }
+                                    .buttonStyle(.glass)
+                                    .padding(.bottom)
+                                } else {
+                                    Button {
+                                        Task {
+                                            await videoProcessor.next()
+                                        }
+                                    } label: {
+                                        Text("next")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .padding(.bottom)
+                                }
                             }
                         }
                 }
             }
             
         }
+        .ignoresSafeArea()
         .overlay(alignment: .topLeading, content: {
             Group {
                 if #available(iOS 26.0, *) {
@@ -182,7 +271,7 @@ struct VideoView: View {
                     .buttonBorderShape(.circle)
                 }
             }
-            .padding(.leading, 4)
+            .padding(4)
         })
         .sheet(isPresented: $showLibrary) {
             VideoPicker(isPresented: $showLibrary, selectedAsset: $asset, assetState: $assetState)
@@ -201,15 +290,44 @@ struct VideoView: View {
                 print("error \(error.localizedDescription)")
             }
         }
+        .sheet(isPresented: $showHistory) {
+            if let videoProcessor {
+                ShotTimelineView(gameState: videoProcessor.tracker.gameState)
+            }
+        }
+    }
+
+    /// Normalized Vision point (origin bottom-left, y up) to SwiftUI view point.
+    func normalizedToView(_ point: CGPoint, viewSize: CGSize) -> CGPoint {
+        CGPoint(x: point.x * viewSize.width, y: (1 - point.y) * viewSize.height)
+    }
+
+    func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
+        
+        let width = rect.width * viewSize.width
+        let height = rect.height * viewSize.height
+        
+        let x = rect.origin.x * viewSize.width
+        let y = (1 - rect.origin.y - rect.height) * viewSize.height
+        return CGRect(x: x, y: y, width: width, height: height)
+        
+//        let scale = CGAffineTransform.identity.scaledBy(x: viewSize.width, y: viewSize.height)
+//        let transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -viewSize.height)
+//        return rect.applying(scale).applying(transform)
     }
     
-    func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
-        let scale = CGAffineTransform.identity.scaledBy(x: viewSize.width, y: viewSize.height)
-        let transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -viewSize.height)
-        return rect.applying(scale).applying(transform)
+    // Adjust a normalized ellipse (center in 0..1 space, radii normalized) to view coordinates, returning a CGRect centered at the correct point.
+    // Rotation, if needed, should be applied by the caller as a transform to a path.
+    func adjustedEllipseFrame(center: CGPoint, radiusX: CGFloat, radiusY: CGFloat, viewSize: CGSize) -> CGRect {
+        let cx = center.x * viewSize.width
+        let cy = (1 - center.y) * viewSize.height // flip Y to match image space used elsewhere
+        let rx = radiusX * viewSize.width
+        let ry = radiusY * viewSize.height
+        return CGRect(x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2)
     }
 }
 
 //#Preview {
 //    VideoView(video: )
 //}
+
