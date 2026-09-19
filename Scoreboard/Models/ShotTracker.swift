@@ -55,6 +55,12 @@ final class ShotTracker {
         self.detector = ShotDetector(config: config)
     }
 
+    /// Recent ball sightings, for the crop predictor.
+    var ballHistory: [BallObservation] { detector.history }
+
+    /// Live arc fit, for the crop predictor.
+    var currentFit: MotionFit? { detector.currentFit }
+
     var rim: HoopGeometry? { rimTracker.geometry }
     var isRimLocked: Bool { rimTracker.isLocked }
     var isRimUserPlaced: Bool { rimTracker.isUserPlaced }

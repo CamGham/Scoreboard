@@ -161,17 +161,15 @@ class VideoProcessor {
                     frames += 1
                     tracker.beginFrame()
 
-                    //|| (frames % 10 == 0)
-                    if tracker.shouldPredict  {
-                        tracker.shouldPredict = true
+                    // The ball gets its own detection pass every frame, inside a crop
+                    // around its predicted position. Players keep the full-frame detect
+                    // plus track path on their existing cadence.
+                    tracker.detectBall(pixelBuffer: buf, orientation: orientation)
+
+                    if tracker.shouldPredict {
                         try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
                     } else {
-                        
                         try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
-                        
-                        if !tracker.shouldPredict && tracker.shouldPredictBall {
-                            try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
-                        }
                     }
                 }
             }
@@ -190,17 +188,15 @@ class VideoProcessor {
                 frames += 1
                 tracker.beginFrame()
 
-                //|| (frames % 10 == 0)
-                if tracker.shouldPredict  {
-                    tracker.shouldPredict = true
+                // The ball gets its own detection pass every frame, inside a crop
+                // around its predicted position. Players keep the full-frame detect
+                // plus track path on their existing cadence.
+                tracker.detectBall(pixelBuffer: buf, orientation: orientation)
+
+                if tracker.shouldPredict {
                     try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
                 } else {
-                    
                     try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
-                    
-                    if !tracker.shouldPredict && tracker.shouldPredictBall {
-                        try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
-                    }
                 }
             }
         } catch {

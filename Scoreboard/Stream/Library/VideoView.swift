@@ -86,6 +86,16 @@ struct VideoView: View {
                                 }
                                 let gameState = videoProcessor.tracker.gameState
 
+                                // The ball is detected rather than tracked, so it is
+                                // drawn from its own sighting instead of the track list.
+                                if let ball = videoProcessor.tracker.ballRect {
+                                    let adjusted = adjustRectForView(rect: ball.rect, viewSize: geometry.size)
+                                    Rectangle()
+                                        .stroke(ball.colour, lineWidth: 2)
+                                        .frame(width: adjusted.width, height: adjusted.height)
+                                        .position(x: adjusted.midX, y: adjusted.midY)
+                                }
+
                                 // Live ball position. `center` is a true centre now, so
                                 // the circle is built symmetrically around it.
                                 if let currentBall = gameState.ballHistory.last {
@@ -348,7 +358,10 @@ struct VideoView: View {
         }
         .sheet(isPresented: $showHistory) {
             if let videoProcessor {
-                ShotTimelineView(gameState: videoProcessor.tracker.gameState)
+                ShotTimelineView(
+                    gameState: videoProcessor.tracker.gameState,
+                    ballStats: videoProcessor.tracker.ballDetector?.stats
+                )
             }
         }
     }

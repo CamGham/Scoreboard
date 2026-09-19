@@ -19,9 +19,6 @@ class VisionTracker {
     var shouldPredict = true
     var canObserve = true
     
-    // override above prediction/observation for object specifc requiremnts
-    var shouldPredictBall: Bool = true
-    
     // Frame identification
     // Monotonic index of frames processed by VisionTracker, advanced by `beginFrame()`.
     // This is the single time base for the trajectory fit — it must count video frames,
@@ -40,6 +37,9 @@ class VisionTracker {
     
     var trackingRequests = [TypedTrackRequest]()
     var trackedRects: [RectangleData] = []
+
+    /// Most recent ball sighting, drawn separately since the ball is no longer a track.
+    var ballRect: RectangleData?
     
     //TODO: reID using UUID + feature similarity
 //    var rectangles = [UUID: RectangleData]()
@@ -53,6 +53,10 @@ class VisionTracker {
     /// Shot detection engine. Runs on the frame-processing thread; results are handed
     /// to `gameState` on the main actor.
     let shotTracker = ShotTracker()
+
+    /// Finds the ball by re-detecting inside a moving crop each frame. The ball is no
+    /// longer part of the `VNTrackObjectRequest` pool — see `BallDetector`.
+    private(set) var ballDetector: BallDetector?
 
     init() {
         print("DEBUG: TRACKER CREATED")
@@ -73,6 +77,7 @@ class VisionTracker {
             await visionModel = try ObjectDetector.createDetector()
             if let visionModel {
                 setupVision(model: visionModel)
+                ballDetector = BallDetector(model: visionModel)
             }
         }
     }
@@ -95,6 +100,38 @@ class VisionTracker {
     func beginFrame() {
         frameCounter &+= 1
         shotTracker.beginFrame(frameCounter)
+    }
+
+    /// Detect the ball for this frame, inside a crop around its predicted position.
+    ///
+    /// Must be called once per frame, after `beginFrame()`. Independent of the player
+    /// tracking path — the two no longer interfere.
+    func detectBall(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) {
+        guard let ballDetector else { return }
+
+        guard let found = ballDetector.detect(
+            pixelBuffer: pixelBuffer,
+            orientation: orientation,
+            frameID: frameCounter,
+            history: shotTracker.ballHistory,
+            fit: shotTracker.currentFit
+        ) else { return }
+
+        shotTracker.ingestBall(
+            boundingBox: found.boundingBox,
+            confidence: CGFloat(found.confidence),
+            frameID: frameCounter
+        )
+
+        Task { @MainActor in
+            self.ballRect = RectangleData(
+                id: UUID(),
+                rect: found.boundingBox,
+                label: "Ball",
+                confidence: found.confidence,
+                colour: .orange
+            )
+        }
     }
 
     /// Pin the rim to a geometry the user placed by hand.
@@ -202,45 +239,15 @@ class VisionTracker {
                         &outputTrackingRequests)
                     
                     
-                    let ballTrack = outputTrackingRequests
-                        .filter { $0.type == .ball }
-                        .max(by: { $0.request.inputObservation.confidence < $1.request.inputObservation.confidence })
-
-                    
-                    let playerTracks = outputTrackingRequests
-                        .filter { $0.type == .player }
-                        .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
-                        .prefix(5)
-                    
-                    let finalTracks: [TypedTrackRequest] = {
-                        if let ball = ballTrack {
-                            // ball always included as track #1
-                            return [ball] + playerTracks.prefix(5)
-                        } else {
-                            // no ball detected → fill all 6 slots with players
-                            return Array(playerTracks.prefix(5))
-                        }
-                    }()
+                    // All six slots go to players now that the ball is detected by
+                    // crop instead of tracked.
+                    let finalTracks = Array(
+                        outputTrackingRequests
+                            .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
+                            .prefix(6)
+                    )
                     
                     self.trackingRequests = finalTracks
-                    return
-                }
-                
-                if !runFullObservation {
-                    let balls = newObservations.filter { ob in
-                        ob.labels.first!.identifier == "Basketball"
-                    }
-                    if balls.isEmpty {
-                        return
-                    }
-                    self.shouldPredictBall = false
-                    self.createNewTrackingRequests(newObservations: balls, &outputTrackingRequests)
-                    
-                    if self.trackingRequests.count < 6 {
-                        self.trackingRequests.append(contentsOf: outputTrackingRequests)
-                    } else {
-                        print("NEED TO WORK OUT THIS")
-                    }
                     return
                 }
                 
@@ -304,23 +311,11 @@ class VisionTracker {
                     
                     
                     
-                    let ballTrack = outputTrackingRequests
-                        .filter { $0.type == .ball }
-                        .max(by: { $0.request.inputObservation.confidence < $1.request.inputObservation.confidence })
-
-                    
-                    let playerTracks = outputTrackingRequests
-                        .filter { $0.type == .player }
-                        .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
-                        .prefix(5)
-                    
-                    let finalTracks: [TypedTrackRequest] = {
-                        if let ball = ballTrack {
-                            return [ball] + playerTracks.prefix(5)
-                        } else {
-                            return Array(playerTracks.prefix(5))
-                        }
-                    }()
+                    let finalTracks = Array(
+                        outputTrackingRequests
+                            .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
+                            .prefix(6)
+                    )
                     self.trackingRequests = finalTracks
                     
                 } catch {
@@ -357,15 +352,15 @@ class VisionTracker {
                 continue
             }
             
-            // make request for tracking on this observation
-            var trackType: ObjectType {
-                if o.labels.first!.identifier == "Basketball" {
-                    return .ball
-                } else {
-                    return .player
-                }
+            // The ball is found by BallDetector's moving crop, not by visual tracking,
+            // so it never enters the track pool. That frees a slot for another player
+            // and stops a lost ball from churning the player track list.
+            if o.labels.first?.identifier == ObjectType.ball.rawValue {
+                continue
             }
-            
+
+            let trackType: ObjectType = .player
+
             let trackRequest = TypedTrackRequest(observation: o, type: trackType)
             if objectsToIgnore.contains(where: { req in
                 req.request.inputObservation.boundingBox.origin.isRoughlyEqual(to: o.boundingBox.origin)
@@ -377,14 +372,6 @@ class VisionTracker {
             trackRequest.request.trackingLevel = .accurate
             outputTrackingRequests.append(trackRequest)
             
-            
-            if trackType == .ball {
-                shotTracker.ingestBall(
-                    boundingBox: o.boundingBox,
-                    confidence: CGFloat(o.confidence),
-                    frameID: frameCounter
-                )
-            }
             
             // on UI update initial bounding boxes
             Task { @MainActor in
@@ -440,10 +427,6 @@ class VisionTracker {
                     
                     if trackReq.lowConfidenceFrames >= 5 {
                         trackReq.request.isLastFrame = true
-                        if trackReq.type == .ball && !tracksContainBallAfter(removing: trackReq) {
-                            print("Lost all balls")
-                            shouldPredictBall = true
-                        }
                         return nil
                     }
                     
@@ -457,10 +440,6 @@ class VisionTracker {
                     
                     if trackReq.lowConfidenceFrames >= 5 {
                         trackReq.request.isLastFrame = true
-                        if trackReq.type == .ball && !tracksContainBallAfter(removing: trackReq) {
-                            print("Lost all balls")
-                            shouldPredictBall = true
-                        }
                         return nil
                     }
                     // feed in new observation for new request
@@ -479,10 +458,6 @@ class VisionTracker {
                         
                         objectsToIgnore.append(trackReq)
                         
-                        if trackReq.type == .ball && !tracksContainBallAfter(removing: trackReq) {
-                            print("Lost all balls")
-                            shouldPredictBall = true
-                        }
                         return nil
                     }
                 } else {
@@ -490,21 +465,13 @@ class VisionTracker {
                     trackReq.lowConfidenceFrames = 0
                 }
                 
-                if trackReq.type == .ball {
-                    shotTracker.ingestBall(
-                        boundingBox: newObs.boundingBox,
-                        confidence: CGFloat(newObs.confidence),
-                        frameID: frameCounter
-                    )
-                }
-                
                 tempTrackedRects.append(
                     RectangleData(
                         id: newObs.uuid,
                         rect: newObs.boundingBox,
-                        label: trackReq.type == .ball ? "Ball" : "Player",
+                        label: "Player",
                         confidence: newObs.confidence,
-                        colour: trackReq.type == .ball ? .orange : .green)
+                        colour: .green)
                 )
                 
                 // Update the input observation for continued tracking
@@ -528,11 +495,6 @@ class VisionTracker {
         }
     }
     
-    private func tracksContainBallAfter(removing trackRequest: TypedTrackRequest) -> Bool {
-        return trackingRequests.contains { trackReq in
-            trackReq.type == .ball && trackReq != trackRequest
-        }
-    }
 }
 
 extension CGPoint {

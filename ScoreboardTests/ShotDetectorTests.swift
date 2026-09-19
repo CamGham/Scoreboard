@@ -666,3 +666,162 @@ struct RimBoxEditorTests {
         #expect(widened.midY == box.midY)
     }
 }
+
+// MARK: - Ball ROI
+
+struct BallROIPredictorTests {
+
+    /// 16:9, the shape almost all of this footage is.
+    private let aspect = 16.0 / 9.0
+
+    @Test("The crop is square in pixels, not in normalized units")
+    func cropIsPixelSquare() {
+        let roi = BallROIPredictor.regionOfInterest(
+            around: CGPoint(x: 0.5, y: 0.5), sideFraction: 0.25, aspect: aspect
+        )
+
+        // A normalized square on a 16:9 frame is a wide rectangle, which would hand back
+        // the letterboxing the crop exists to avoid. Height must be scaled by aspect.
+        #expect(abs(roi.width - 0.25) < 1e-9)
+        #expect(abs(roi.height - 0.25 * aspect) < 1e-9)
+
+        // Equal extent in pixels on a 1920x1080 frame.
+        #expect(abs((roi.width * 1920) - (roi.height * 1080)) < 1e-6)
+    }
+
+    @Test("The crop stays inside the frame without shrinking")
+    func cropSlidesRatherThanShrinks() {
+        let side = 0.25
+
+        for centre in [CGPoint(x: 0.01, y: 0.02), CGPoint(x: 0.99, y: 0.98)] {
+            let roi = BallROIPredictor.regionOfInterest(
+                around: centre, sideFraction: side, aspect: aspect
+            )
+
+            // Size preserved, so magnification — and detection behaviour — is the same
+            // wherever in the frame the ball happens to be.
+            #expect(abs(roi.width - side) < 1e-9)
+            #expect(abs(roi.height - side * aspect) < 1e-9)
+
+            #expect(roi.minX >= -1e-9)
+            #expect(roi.minY >= -1e-9)
+            #expect(roi.maxX <= 1 + 1e-9)
+            #expect(roi.maxY <= 1 + 1e-9)
+        }
+    }
+
+    @Test("An oversized crop is capped but stays square")
+    func oversizedCropStaysSquare() {
+        let roi = BallROIPredictor.regionOfInterest(
+            around: CGPoint(x: 0.5, y: 0.5), sideFraction: 0.9, aspect: aspect
+        )
+
+        #expect(roi.height <= 1 + 1e-9)
+        #expect(roi.width <= 1 + 1e-9)
+        #expect(abs((roi.width * 1920) - (roi.height * 1080)) < 1e-6)
+    }
+
+    @Test("The search window grows with consecutive misses, then stops")
+    func windowGrowsWithMisses() {
+        let config = BallROIPredictor.Config()
+
+        let fresh = BallROIPredictor.sideFraction(consecutiveMisses: 0, config: config)
+        let stale = BallROIPredictor.sideFraction(consecutiveMisses: 3, config: config)
+
+        #expect(fresh == config.baseSideFraction)
+        #expect(stale > fresh)
+        #expect(BallROIPredictor.sideFraction(consecutiveMisses: 99, config: config)
+                == config.maxSideFraction)
+    }
+
+    @Test("ROI-relative results map back to full-frame coordinates")
+    func mapsResultsBackToFullFrame() {
+        let roi = CGRect(x: 0.25, y: 0.40, width: 0.25, height: 0.44)
+
+        // Dead centre of the crop must land at the centre of the crop in the full frame.
+        let centred = BallROIPredictor.mapToFullFrame(
+            roiRelative: CGRect(x: 0.45, y: 0.45, width: 0.1, height: 0.1), roi: roi
+        )
+        #expect(abs(centred.midX - roi.midX) < 1e-9)
+        #expect(abs(centred.midY - roi.midY) < 1e-9)
+
+        // A box filling the crop must come back as the crop itself.
+        let full = BallROIPredictor.mapToFullFrame(
+            roiRelative: CGRect(x: 0, y: 0, width: 1, height: 1), roi: roi
+        )
+        #expect(abs(full.minX - roi.minX) < 1e-9)
+        #expect(abs(full.minY - roi.minY) < 1e-9)
+        #expect(abs(full.width - roi.width) < 1e-9)
+        #expect(abs(full.height - roi.height) < 1e-9)
+    }
+
+    @Test("A ball detected in the crop keeps its real size after mapping")
+    func mappingPreservesApparentSize() {
+        // The ball fills more of the crop than it does of the frame — that magnification
+        // is the entire point — but mapping back must restore its true frame-relative size.
+        let roi = BallROIPredictor.regionOfInterest(
+            around: CGPoint(x: 0.5, y: 0.5), sideFraction: 0.25, aspect: 16.0 / 9.0
+        )
+        // 9.6% of the crop's width.
+        let inCrop = CGRect(x: 0.45, y: 0.45, width: 0.096, height: 0.096)
+
+        let mapped = BallROIPredictor.mapToFullFrame(roiRelative: inCrop, roi: roi)
+
+        // 0.096 x 0.25 = 0.024 of the frame — the ~46px ball in a 1920 frame.
+        #expect(abs(mapped.width - 0.024) < 1e-6)
+    }
+
+    @Test("Prediction follows the ballistic arc when the fit is good")
+    func predictsAlongArc() throws {
+        let arc = ballisticArc(
+            startFrame: 0, frames: 20,
+            fromX: 0.2, fromY: 0.3, peakY: 0.8, landX: 0.7
+        )
+        let fit = try #require(fitMotionWeighted(arc))
+
+        let predicted = try #require(
+            BallROIPredictor.predictedCentre(history: arc, fit: fit, atFrame: 21)
+        )
+        let truth = predictPosition(fit: fit, t: 21)
+
+        #expect(abs(predicted.x - truth.x) < 1e-6)
+        #expect(abs(predicted.y - truth.y) < 1e-6)
+    }
+
+    @Test("Prediction falls back to linear motion without a usable fit")
+    func fallsBackToLinearMotion() throws {
+        let history = [
+            BallObservation(frameID: 10, center: CGPoint(x: 0.40, y: 0.50), radius: 0.02, confidence: 0.9),
+            BallObservation(frameID: 11, center: CGPoint(x: 0.44, y: 0.54), radius: 0.02, confidence: 0.9)
+        ]
+
+        let predicted = try #require(
+            BallROIPredictor.predictedCentre(history: history, fit: nil, atFrame: 12)
+        )
+
+        #expect(abs(predicted.x - 0.48) < 1e-9)
+        #expect(abs(predicted.y - 0.58) < 1e-9)
+    }
+
+    @Test("No history means no prediction, so the detector sweeps")
+    func noHistoryNoPrediction() {
+        #expect(BallROIPredictor.predictedCentre(history: [], fit: nil, atFrame: 0) == nil)
+    }
+
+    @Test("Detection stats separate crop hits from full-frame hits")
+    func statsSeparateModes() {
+        var stats = BallDetectionStats()
+
+        stats.record(hit: true, cropped: true, confidence: 0.8)
+        stats.record(hit: false, cropped: true, confidence: 0)
+        stats.record(hit: true, cropped: false, confidence: 0.6)
+
+        #expect(stats.framesProcessed == 3)
+        #expect(stats.croppedAttempts == 2)
+        #expect(stats.croppedHits == 1)
+        #expect(stats.croppedHitRate == 0.5)
+        #expect(stats.fullFrameHitRate == 1.0)
+        #expect(abs(stats.meanConfidence - 0.7) < 1e-9)
+        #expect(abs(stats.overallHitRate - (2.0 / 3.0)) < 1e-9)
+    }
+}

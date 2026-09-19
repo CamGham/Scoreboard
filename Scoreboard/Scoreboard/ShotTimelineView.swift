@@ -64,6 +64,9 @@ struct LiveShotReadout: View {
 struct ShotTimelineView: View {
     let gameState: GameState
 
+    /// Detection tally, so the moving crop can be judged against the full-frame sweep.
+    var ballStats: BallDetectionStats?
+
     var body: some View {
         NavigationStack {
             List {
@@ -80,6 +83,32 @@ struct ShotTimelineView: View {
                     Text("Totals")
                 } footer: {
                     Text("Every make counts as two. Separating twos from threes needs court calibration, which isn't wired up yet.")
+                }
+
+                if let stats = ballStats {
+                    Section {
+                        LabeledContent("Frames", value: "\(stats.framesProcessed)")
+                        LabeledContent(
+                            "Ball found",
+                            value: String(format: "%.0f%% of frames", stats.overallHitRate * 100)
+                        )
+                        LabeledContent(
+                            "In crop",
+                            value: String(format: "%.0f%% of %d", stats.croppedHitRate * 100, stats.croppedAttempts)
+                        )
+                        LabeledContent(
+                            "Full frame",
+                            value: String(format: "%.0f%% of %d", stats.fullFrameHitRate * 100, stats.fullFrameAttempts)
+                        )
+                        LabeledContent(
+                            "Mean confidence",
+                            value: String(format: "%.2f", stats.meanConfidence)
+                        )
+                    } header: {
+                        Text("Ball detection")
+                    } footer: {
+                        Text("Compare the crop's hit rate against the full-frame sweep. A trajectory fit needs consecutive sightings, so the share of frames with a ball matters more than confidence.")
+                    }
                 }
 
                 Section("Shots") {
