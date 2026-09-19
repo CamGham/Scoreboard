@@ -15,21 +15,39 @@ struct BallObservation: Equatable {
     let radius: CGFloat
     let confidence: CGFloat
 
-    init(frameID: Int, center: CGPoint, radius: CGFloat, confidence: CGFloat) {
+    /// Presentation time of this frame, in seconds from the start of the media.
+    ///
+    /// A second, separate time base from `frameID`, and deliberately so. `frameID` counts
+    /// processed frames in uniform steps, which is what the trajectory fit needs — a
+    /// parabola in irregular time isn't a parabola. But uniform steps can't be used to
+    /// seek: phone footage is frequently variable frame rate, so frame index ÷ nominal
+    /// fps drifts further the longer the clip runs. Seeking needs the real timestamp,
+    /// so both are carried and never conflated.
+    let timeSeconds: Double?
+
+    init(
+        frameID: Int,
+        center: CGPoint,
+        radius: CGFloat,
+        confidence: CGFloat,
+        timeSeconds: Double? = nil
+    ) {
         self.frameID = frameID
         self.center = center
         self.radius = radius
         self.confidence = confidence
+        self.timeSeconds = timeSeconds
     }
 
     /// Build from a detector bounding box (Vision space, origin bottom-left).
-    init(frameID: Int, boundingBox: CGRect, confidence: CGFloat) {
+    init(frameID: Int, boundingBox: CGRect, confidence: CGFloat, timeSeconds: Double? = nil) {
         self.init(
             frameID: frameID,
             center: CGPoint(x: boundingBox.midX, y: boundingBox.midY),
             // Detector boxes are rarely perfectly square; average the two half-extents.
             radius: (boundingBox.width + boundingBox.height) / 4,
-            confidence: confidence
+            confidence: confidence,
+            timeSeconds: timeSeconds
         )
     }
 }

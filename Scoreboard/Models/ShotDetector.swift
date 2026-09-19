@@ -23,6 +23,11 @@ struct RimCrossing: Equatable {
 
     /// True when the ball centre passed through the opening with room for the ball's width.
     let isClean: Bool
+
+    /// When the crossing happened, in seconds from the start of the media —
+    /// interpolated between the two straddling frames, same as the position.
+    /// This is what a replay or a still frame seeks to.
+    let timeSeconds: Double?
 }
 
 struct ShotAttempt: Identifiable, Equatable {
@@ -56,6 +61,22 @@ struct ShotAttempt: Identifiable, Equatable {
     /// True when the attempt was picked up on its way down rather than at release, so
     /// the early trajectory is missing.
     var wasDetectedLate: Bool
+
+    /// The rim this attempt was judged against, captured at the time so a card or replay
+    /// draws the geometry that actually produced the verdict.
+    var rim: HoopGeometry?
+
+    /// Media time of the first and last sighting, in seconds.
+    var startTime: Double? { trajectory.first?.timeSeconds }
+    var endTime: Double? { trajectory.last?.timeSeconds }
+
+    /// The single most representative moment of the attempt: the rim crossing if there
+    /// was one, otherwise the end. This is the frame worth showing on a card.
+    var keyTime: Double? {
+        crossings.first(where: { $0.isClean })?.timeSeconds
+            ?? crossings.last?.timeSeconds
+            ?? endTime
+    }
 
     /// The crossing that decided a make.
     var scoringCrossing: RimCrossing? {
@@ -337,7 +358,8 @@ struct ShotDetector {
             crossings: [],
             rimContacts: 0,
             apexY: trajectory.map { Double($0.center.y) }.max(),
-            wasDetectedLate: late
+            wasDetectedLate: late,
+            rim: rim
         )
 
         currentAttempt = attempt
@@ -466,6 +488,13 @@ struct ShotDetector {
         let x = before.center.x + (fraction * (after.center.x - before.center.x))
         let frame = Double(before.frameID) + (fraction * Double(after.frameID - before.frameID))
 
+        // Interpolated in real time too, not derived from the frame index — the gap
+        // between two frames is not guaranteed to be 1/fps.
+        let timeSeconds: Double? = {
+            guard let t0 = before.timeSeconds, let t1 = after.timeSeconds else { return nil }
+            return t0 + (Double(fraction) * (t1 - t0))
+        }()
+
         let offsetFromCentre = x - rim.center.x
         let normalisedOffset = rim.horizontalRadius > 0
             ? Double(offsetFromCentre / rim.horizontalRadius)
@@ -482,7 +511,8 @@ struct ShotDetector {
             frame: frame,
             x: Double(x),
             normalisedOffset: normalisedOffset,
-            isClean: abs(offsetFromCentre) <= usableHalfWidth
+            isClean: abs(offsetFromCentre) <= usableHalfWidth,
+            timeSeconds: timeSeconds
         )
     }
 

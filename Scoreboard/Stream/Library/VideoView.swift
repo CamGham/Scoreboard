@@ -30,6 +30,10 @@ struct VideoView: View {
     /// scoring plane, so anything that happened before the rim was known would be lost.
     @State var showRimPlacement = false
     @State var rimPreflight: RimPreflight.Result?
+
+    /// Decodes the one frame each shot card is drawn on. Built once per asset, since it
+    /// caches decoded frames across the whole timeline.
+    @State var frameProvider: ShotFrameProvider?
     var body: some View {
         VStack {
             switch assetState {
@@ -319,6 +323,7 @@ struct VideoView: View {
             do {
                 let processor = try await VideoProcessor.create(videoAsset: asset)
                 videoProcessor = processor
+                frameProvider = ShotFrameProvider(asset: asset)
 
                 // Resolve the rim across the whole clip before a single frame is
                 // processed. Sampling spread-out frames beats the opening seconds: a rim
@@ -360,7 +365,10 @@ struct VideoView: View {
             if let videoProcessor {
                 ShotTimelineView(
                     gameState: videoProcessor.tracker.gameState,
-                    ballStats: videoProcessor.tracker.ballDetector?.stats
+                    ballStats: videoProcessor.tracker.ballDetector?.stats,
+                    frameProvider: frameProvider,
+                    asset: asset,
+                    orientedVideoSize: videoProcessor.orientedVideoSize
                 )
             }
         }
