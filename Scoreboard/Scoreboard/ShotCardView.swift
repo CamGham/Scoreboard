@@ -98,7 +98,8 @@ struct ShotTrajectoryOverlay: View {
     }
 
     private var resultColour: Color {
-        switch attempt.result {
+        if attempt.userVerdict == .notAShot { return .gray }
+        switch attempt.effectiveResult {
         case .made: return .green
         case .missed: return .red
         case .abandoned: return .gray
@@ -158,7 +159,10 @@ struct ShotCardView: View {
     private var resultBadge: some View {
         HStack(spacing: 4) {
             Image(systemName: symbol)
-            Text(attempt.result.rawValue.capitalized)
+            Text(badgeText)
+            if attempt.isCorrected {
+                Image(systemName: "pencil").font(.caption2)
+            }
         }
         .font(.caption.weight(.semibold))
         .padding(.horizontal, 8)
@@ -218,7 +222,13 @@ struct ShotCardView: View {
         return "frames \(attempt.startFrame)–\(end)"
     }
 
+    /// The user's ruling outranks the detector's guess wherever there is one.
+    private var badgeText: String {
+        attempt.userVerdict?.label ?? attempt.result.rawValue.capitalized
+    }
+
     private var symbol: String {
+        if let verdict = attempt.userVerdict { return verdict.symbol }
         switch attempt.result {
         case .made: return "checkmark.circle.fill"
         case .missed: return "xmark.circle.fill"
@@ -228,7 +238,8 @@ struct ShotCardView: View {
     }
 
     private var colour: Color {
-        switch attempt.result {
+        if attempt.userVerdict == .notAShot { return .secondary }
+        switch attempt.effectiveResult {
         case .made: return .green
         case .missed: return .red
         case .abandoned: return .secondary

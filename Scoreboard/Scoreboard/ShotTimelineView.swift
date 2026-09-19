@@ -96,6 +96,23 @@ struct ShotTimelineView: View {
                     Text("Every make counts as two. Separating twos from threes needs court calibration, which isn't wired up yet.")
                 }
 
+                if gameState.accuracy.reviewed > 0 {
+                    let accuracy = gameState.accuracy
+                    Section {
+                        LabeledContent("Shots reviewed", value: "\(accuracy.reviewed)")
+                        LabeledContent(
+                            "Detector agreed",
+                            value: String(format: "%d (%.0f%%)", accuracy.agreed, accuracy.agreementRate)
+                        )
+                        LabeledContent("Wrong call", value: "\(accuracy.wrongCalls)")
+                        LabeledContent("Not a shot", value: "\(accuracy.falsePositives)")
+                    } header: {
+                        Text("Detector accuracy")
+                    } footer: {
+                        Text("Measured against your corrections. Every shot you rule on is a labelled example, so this becomes more meaningful the more you review.")
+                    }
+                }
+
                 if let stats = ballStats {
                     Section {
                         LabeledContent("Frames", value: "\(stats.framesProcessed)")
@@ -162,11 +179,16 @@ struct ShotTimelineView: View {
             .navigationBarTitleDisplayMode(.inline)
             .fullScreenCover(item: $replaying) { attempt in
                 if let asset {
+                    // Re-read from game state rather than using the captured copy, so a
+                    // ruling made in the sheet is reflected in the sheet.
+                    let live = gameState.attempt(withID: attempt.id) ?? attempt
+
                     ShotReplayView(
-                        attempt: attempt,
+                        attempt: live,
                         asset: asset,
                         orientedVideoSize: orientedVideoSize,
-                        onDismiss: { replaying = nil }
+                        onDismiss: { replaying = nil },
+                        onVerdict: { gameState.setVerdict($0, for: attempt.id) }
                     )
                 }
             }

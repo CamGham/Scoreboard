@@ -44,6 +44,9 @@ struct ShotReplayView: View {
 
     let onDismiss: () -> Void
 
+    /// Called when the user rules on this shot. Nil clears an existing ruling.
+    var onVerdict: ((ShotAttempt.UserVerdict?) -> Void)?
+
     @State private var replay: ShotReplayPlayer?
 
     /// Controls are overlaid, so they can be dismissed to get a clear look at the shot.
@@ -119,7 +122,11 @@ struct ShotReplayView: View {
     private var resultBadge: some View {
         HStack(spacing: 4) {
             Image(systemName: resultSymbol)
-            Text(attempt.result.rawValue.capitalized)
+            Text(badgeText)
+            if attempt.isCorrected {
+                Image(systemName: "pencil")
+                    .font(.caption2)
+            }
         }
         .font(.caption.weight(.semibold))
         .padding(.horizontal, 10)
@@ -128,7 +135,15 @@ struct ShotReplayView: View {
         .foregroundStyle(resultColour)
     }
 
+    /// Shows the ruling once there is one — what the user decided outranks what the
+    /// detector guessed.
+    private var badgeText: String {
+        if let verdict = attempt.userVerdict { return verdict.label }
+        return attempt.result.rawValue.capitalized
+    }
+
     private var resultSymbol: String {
+        if let verdict = attempt.userVerdict { return verdict.symbol }
         switch attempt.result {
         case .made: return "checkmark.circle.fill"
         case .missed: return "xmark.circle.fill"
@@ -138,11 +153,51 @@ struct ShotReplayView: View {
     }
 
     private var resultColour: Color {
-        switch attempt.result {
+        if attempt.userVerdict == .notAShot { return .secondary }
+        switch attempt.effectiveResult {
         case .made: return .green
         case .missed: return .red
         case .abandoned: return .secondary
         case .inProgress: return .yellow
+        }
+    }
+
+    /// Ruling controls, placed here because this is the moment the user actually knows
+    /// the answer — they have just watched it.
+    private var verdictBar: some View {
+        HStack(spacing: 8) {
+            ForEach(ShotAttempt.UserVerdict.allCases, id: \.self) { verdict in
+                let isActive = attempt.userVerdict == verdict
+
+                Button {
+                    // Tapping the active ruling clears it, handing the shot back to the
+                    // detector's call.
+                    onVerdict?(isActive ? nil : verdict)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: verdict.symbol)
+                        Text(verdict.label)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        isActive ? verdictTint(verdict).opacity(0.85) : Color.white.opacity(0.14),
+                        in: Capsule()
+                    )
+                    .foregroundStyle(isActive ? .black : .white)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func verdictTint(_ verdict: ShotAttempt.UserVerdict) -> Color {
+        switch verdict {
+        case .made: return .green
+        case .missed: return .red
+        case .notAShot: return .orange
         }
     }
 
@@ -200,6 +255,8 @@ struct ShotReplayView: View {
                     ratePicker(replay)
                         .frame(maxWidth: 190)
                 }
+
+                if onVerdict != nil { verdictBar }
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)

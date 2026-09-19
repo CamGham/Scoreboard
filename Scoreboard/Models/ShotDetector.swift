@@ -31,6 +31,37 @@ struct RimCrossing: Equatable {
 }
 
 struct ShotAttempt: Identifiable, Equatable {
+
+    /// What the user says actually happened, when they disagree with the detector or
+    /// resolve something it couldn't.
+    ///
+    /// Kept *alongside* `result` rather than overwriting it. Both are needed: the
+    /// detector's call is what you are measuring, the user's is the ground truth you are
+    /// measuring it against. Overwriting would destroy the comparison the moment it
+    /// became useful.
+    enum UserVerdict: String, CaseIterable {
+        case made
+        case missed
+        /// Not a shot at all — a pass, a rebound, a detector artefact.
+        case notAShot
+
+        var label: String {
+            switch self {
+            case .made: return "Made"
+            case .missed: return "Missed"
+            case .notAShot: return "Not a shot"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .made: return "checkmark.circle.fill"
+            case .missed: return "xmark.circle.fill"
+            case .notAShot: return "nosign"
+            }
+        }
+    }
+
     enum Result: String {
         case inProgress
         case made
@@ -66,6 +97,39 @@ struct ShotAttempt: Identifiable, Equatable {
     /// draws the geometry that actually produced the verdict.
     var rim: HoopGeometry?
 
+    /// The user's ruling, if they have given one.
+    var userVerdict: UserVerdict?
+
+    /// The verdict that counts — the user's where they gave one, else the detector's.
+    var effectiveResult: Result {
+        switch userVerdict {
+        case .made: return .made
+        case .missed: return .missed
+        case .notAShot, .none: return result
+        }
+    }
+
+    /// Whether this belongs in the field-goal totals. Something ruled `notAShot`, still
+    /// in flight, or abandoned without a ruling does not.
+    var isCountedAttempt: Bool {
+        guard userVerdict != .notAShot else { return false }
+        return effectiveResult == .made || effectiveResult == .missed
+    }
+
+    var isCountedMake: Bool {
+        isCountedAttempt && effectiveResult == .made
+    }
+
+    /// True when the user's ruling contradicts the detector.
+    var isCorrected: Bool {
+        guard let userVerdict else { return false }
+        switch userVerdict {
+        case .made: return result != .made
+        case .missed: return result != .missed
+        case .notAShot: return true
+        }
+    }
+
     /// Media time of the first and last sighting, in seconds.
     var startTime: Double? { trajectory.first?.timeSeconds }
     var endTime: Double? { trajectory.last?.timeSeconds }
@@ -93,7 +157,10 @@ struct ShotAttempt: Identifiable, Equatable {
     }
 
     static func == (lhs: ShotAttempt, rhs: ShotAttempt) -> Bool {
-        lhs.id == rhs.id && lhs.result == rhs.result && lhs.endFrame == rhs.endFrame
+        lhs.id == rhs.id
+            && lhs.result == rhs.result
+            && lhs.endFrame == rhs.endFrame
+            && lhs.userVerdict == rhs.userVerdict
     }
 }
 
@@ -359,7 +426,8 @@ struct ShotDetector {
             rimContacts: 0,
             apexY: trajectory.map { Double($0.center.y) }.max(),
             wasDetectedLate: late,
-            rim: rim
+            rim: rim,
+            userVerdict: nil
         )
 
         currentAttempt = attempt

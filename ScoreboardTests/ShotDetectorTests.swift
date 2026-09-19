@@ -1095,3 +1095,152 @@ struct BallInterpolationTests {
         #expect(interpolatedBallPosition(trajectory: [], atTime: 1.0) == nil)
     }
 }
+
+// MARK: - User corrections
+
+@MainActor
+struct CorrectionTests {
+
+    private func attempt(
+        _ result: ShotAttempt.Result,
+        verdict: ShotAttempt.UserVerdict? = nil
+    ) -> ShotAttempt {
+        ShotAttempt(
+            id: UUID(), startFrame: 0, endFrame: 10, result: result,
+            trajectory: [], crossings: [], rimContacts: 0,
+            apexY: nil, wasDetectedLate: false, rim: nil, userVerdict: verdict
+        )
+    }
+
+    @Test("A ruling overrides the detector without erasing it")
+    func rulingPreservesDetectorCall() {
+        let shot = attempt(.missed, verdict: .made)
+
+        // Both survive: the detector's call is what's being measured, the user's is
+        // the ground truth it's measured against.
+        #expect(shot.result == .missed)
+        #expect(shot.effectiveResult == .made)
+        #expect(shot.isCorrected)
+    }
+
+    @Test("Agreeing with the detector is not a correction")
+    func agreementIsNotCorrection() {
+        let shot = attempt(.made, verdict: .made)
+        #expect(shot.isCorrected == false)
+        #expect(shot.effectiveResult == .made)
+    }
+
+    @Test("Correcting an old shot updates the score retroactively")
+    func correctionsApplyRetroactively() {
+        let state = GameState()
+        let made = attempt(.made)
+        let missed = attempt(.missed)
+
+        state.handle(.attemptResolved(made))
+        state.handle(.attemptResolved(missed))
+
+        #expect(state.stats.attempts == 2)
+        #expect(state.stats.makes == 1)
+
+        // Stats are derived, not accumulated, so a late ruling is reflected at once —
+        // counters incremented as events arrived could not do this.
+        state.setVerdict(.made, for: missed.id)
+
+        #expect(state.stats.makes == 2)
+        #expect(state.stats.points == 4)
+        #expect(abs(state.stats.fieldGoalPercentage - 100) < 1e-9)
+    }
+
+    @Test("A shot ruled not-a-shot leaves the totals entirely")
+    func falsePositiveLeavesTotals() {
+        let state = GameState()
+        let real = attempt(.made)
+        let bogus = attempt(.made)
+
+        state.handle(.attemptResolved(real))
+        state.handle(.attemptResolved(bogus))
+        #expect(state.stats.attempts == 2)
+
+        state.setVerdict(.notAShot, for: bogus.id)
+
+        // Not a miss — it never happened, so it can't count against the percentage.
+        #expect(state.stats.attempts == 1)
+        #expect(state.stats.makes == 1)
+        #expect(abs(state.stats.fieldGoalPercentage - 100) < 1e-9)
+    }
+
+    @Test("Ruling on an abandoned attempt promotes it into the totals")
+    func rulingResolvesAbandoned() {
+        let state = GameState()
+        let lost = attempt(.abandoned)
+
+        state.handle(.attemptResolved(lost))
+        #expect(state.stats.attempts == 0)
+        #expect(state.abandonedAttempts.count == 1)
+
+        state.setVerdict(.made, for: lost.id)
+
+        #expect(state.stats.attempts == 1)
+        #expect(state.stats.makes == 1)
+    }
+
+    @Test("Clearing a ruling hands the shot back to the detector")
+    func clearingRulingRestoresDetectorCall() {
+        let state = GameState()
+        let shot = attempt(.missed)
+        state.handle(.attemptResolved(shot))
+
+        state.setVerdict(.made, for: shot.id)
+        #expect(state.stats.makes == 1)
+
+        state.setVerdict(nil, for: shot.id)
+
+        #expect(state.stats.makes == 0)
+        #expect(state.stats.attempts == 1)
+        #expect(state.attempt(withID: shot.id)?.isCorrected == false)
+    }
+
+    @Test("Accuracy counts only shots the user has ruled on")
+    func accuracyIgnoresUnreviewed() {
+        let state = GameState()
+        let agreed = attempt(.made)
+        let flipped = attempt(.made)
+        let bogus = attempt(.missed)
+        let untouched = attempt(.missed)
+
+        for shot in [agreed, flipped, bogus, untouched] {
+            state.handle(.attemptResolved(shot))
+        }
+
+        state.setVerdict(.made, for: agreed.id)
+        state.setVerdict(.missed, for: flipped.id)
+        state.setVerdict(.notAShot, for: bogus.id)
+
+        let accuracy = state.accuracy
+        #expect(accuracy.reviewed == 3)
+        #expect(accuracy.agreed == 1)
+        #expect(accuracy.wrongCalls == 1)
+        #expect(accuracy.falsePositives == 1)
+        #expect(abs(accuracy.agreementRate - (100.0 / 3.0)) < 0.01)
+    }
+
+    @Test("Accuracy is zero-safe before anything is reviewed")
+    func accuracyBeforeReview() {
+        let state = GameState()
+        state.handle(.attemptResolved(attempt(.made)))
+
+        #expect(state.accuracy.reviewed == 0)
+        #expect(state.accuracy.agreementRate == 0)
+    }
+
+    @Test("Ruling an unknown id changes nothing")
+    func unknownIdIsIgnored() {
+        let state = GameState()
+        state.handle(.attemptResolved(attempt(.made)))
+
+        state.setVerdict(.missed, for: UUID())
+
+        #expect(state.stats.attempts == 1)
+        #expect(state.stats.makes == 1)
+    }
+}
