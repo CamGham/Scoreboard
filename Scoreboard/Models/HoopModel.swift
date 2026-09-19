@@ -42,6 +42,30 @@ struct HoopGeometry: Equatable {
         self.horizontalRadius = horizontalRadius
     }
 
+    /// Build from a rect in normalized *view* space (origin top-left, y down) — the
+    /// space SwiftUI drags land in.
+    ///
+    /// Kept here rather than inside the placement view so the flip has one definition
+    /// and can be tested for round-trip fidelity. Getting it wrong would mirror the rim
+    /// vertically, which on a centred hoop looks almost right and silently biases every
+    /// verdict.
+    init(normalizedViewRect rect: CGRect) {
+        self.init(
+            boundingBox: CGRect(
+                x: rect.minX,
+                y: 1 - rect.maxY,
+                width: rect.width,
+                height: rect.height
+            )
+        )
+    }
+
+    /// The inverse of `init(normalizedViewRect:)`.
+    var normalizedViewRect: CGRect {
+        let box = boundingBox
+        return CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
+    }
+
     /// Build from a detector bounding box (Vision space, origin bottom-left).
     init(boundingBox: CGRect) {
         self.init(
@@ -88,26 +112,47 @@ func ellipseBallClearance(
 /// underneath an in-flight shot. Taking a running median over recent detections gives a
 /// rim that is both stable and still able to follow a genuine camera move.
 struct RimTracker {
+
+    /// Where the current geometry came from.
+    enum Source: Equatable {
+        case detected
+        /// Positioned by the user. Outranks the detector permanently.
+        case userPlaced
+    }
+
     /// Detections to keep before the rim is considered locked.
     private let sampleCapacity: Int
 
     /// Detections needed before `geometry` is published at all.
+    ///
+    /// One, deliberately. Rim detections are scarce — the pipeline only runs the
+    /// detector on a fraction of frames — so withholding the rim until several have
+    /// arrived can mean no scoring plane for most of a clip. Publishing immediately and
+    /// refining as more samples land is strictly better: the estimate is available from
+    /// the first sighting and only improves.
     private let minimumSamples: Int
 
     /// A detection this far (in rim widths) from the established rim is treated as a
     /// different object — a second hoop, a backboard edge — and ignored.
     private let rejectionDistanceInWidths: CGFloat
 
+    /// Outlier rejection only switches on once this many samples agree. Rejecting
+    /// against a single sample would let one bad first detection lock out every real
+    /// rim that followed.
+    private let rejectionActiveAfter = 3
+
     private var samples: [CGRect] = []
 
     private(set) var geometry: HoopGeometry?
+
+    private(set) var source: Source = .detected
 
     /// Frame of the most recently accepted detection.
     private(set) var lastUpdatedFrame: Int?
 
     init(
         sampleCapacity: Int = 31,
-        minimumSamples: Int = 3,
+        minimumSamples: Int = 1,
         rejectionDistanceInWidths: CGFloat = 1.5
     ) {
         self.sampleCapacity = sampleCapacity
@@ -116,15 +161,36 @@ struct RimTracker {
     }
 
     var isLocked: Bool {
-        geometry != nil && samples.count >= sampleCapacity
+        source == .userPlaced || (geometry != nil && samples.count >= sampleCapacity)
+    }
+
+    var isUserPlaced: Bool { source == .userPlaced }
+
+    /// Pin the rim to a geometry the user positioned by hand.
+    ///
+    /// This wins outright: detections stop being accepted afterwards. The user can see
+    /// the rim and the detector evidently could not, so letting a later low-confidence
+    /// box drag the scoring plane off their placement would only undo their work.
+    mutating func setUserPlaced(_ geometry: HoopGeometry) {
+        self.geometry = geometry
+        self.source = .userPlaced
+        self.samples = [geometry.boundingBox]
+    }
+
+    /// Hand control back to the detector, discarding a manual placement.
+    mutating func clearUserPlacement() {
+        source = .detected
+        samples.removeAll()
+        geometry = nil
     }
 
     /// Feed a rim detection. Returns true when it was accepted as the same rim.
     @discardableResult
     mutating func observe(boundingBox: CGRect, frameID: Int) -> Bool {
+        guard source != .userPlaced else { return false }
         guard boundingBox.width > 0, boundingBox.height > 0 else { return false }
 
-        if let current = geometry {
+        if let current = geometry, samples.count >= rejectionActiveAfter {
             let dx = boundingBox.midX - current.center.x
             let dy = boundingBox.midY - current.center.y
             let reach = max(current.horizontalRadius * 2, 1e-4) * rejectionDistanceInWidths
@@ -164,6 +230,7 @@ struct RimTracker {
     mutating func reset() {
         samples.removeAll()
         geometry = nil
+        source = .detected
         lastUpdatedFrame = nil
     }
 }

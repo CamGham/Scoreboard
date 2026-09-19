@@ -96,6 +96,38 @@ class VisionTracker {
         frameCounter &+= 1
         shotTracker.beginFrame(frameCounter)
     }
+
+    /// Pin the rim to a geometry the user placed by hand.
+    func setUserRim(_ geometry: HoopGeometry) {
+        shotTracker.setUserRim(geometry)
+        shotTracker.refreshSnapshot(frameID: frameCounter)
+
+        Task { @MainActor in
+            self.hoop = [
+                RectangleData(
+                    id: UUID(),
+                    rect: geometry.boundingBox,
+                    label: "Rim (placed)",
+                    confidence: 1.0,
+                    colour: .orange)
+            ]
+        }
+    }
+
+    /// Seed the rim from a pre-flight scan of the clip.
+    func seedRim(_ geometry: HoopGeometry) {
+        shotTracker.seedRim(geometry)
+        shotTracker.refreshSnapshot(frameID: frameCounter)
+    }
+
+    /// The model, once it has finished loading. Used by the pre-flight rim scan.
+    func awaitVisionModel() async -> VNCoreMLModel? {
+        for _ in 0..<50 {
+            if let visionModel { return visionModel }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return visionModel
+    }
     
     func setupVision(model: VNCoreMLModel) {
         
@@ -122,8 +154,13 @@ class VisionTracker {
             
             if let results = request.results as? [VNRecognizedObjectObservation] {
                 
-                if self.hoop.isEmpty && self.frameCounter > 30 * 2 {
-                    print("DEBUG: URGENT RIM")
+                // Keep sampling the rim until the estimate has settled, not merely
+                // until the first one lands. Detection runs on few frames, so stopping
+                // at the first sighting freezes the scoring plane on one noisy box with
+                // no way to recover from a bad one.
+                if !self.shotTracker.isRimLocked {
+                    // A lower bar than the general filter below: the rim is static, so a
+                    // run of middling detections still medians into a good estimate.
                     let hoops = results.filter({
                         $0.labels.first?.identifier == "Rim"
                         &&

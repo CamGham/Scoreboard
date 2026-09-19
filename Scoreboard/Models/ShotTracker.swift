@@ -57,6 +57,18 @@ final class ShotTracker {
 
     var rim: HoopGeometry? { rimTracker.geometry }
     var isRimLocked: Bool { rimTracker.isLocked }
+    var isRimUserPlaced: Bool { rimTracker.isUserPlaced }
+
+    /// Pin the rim to a hand-placed geometry. Detections stop overriding it.
+    func setUserRim(_ geometry: HoopGeometry) {
+        rimTracker.setUserPlaced(geometry)
+    }
+
+    /// Seed the rim from a pre-flight scan, without locking out further detections.
+    func seedRim(_ geometry: HoopGeometry) {
+        guard !rimTracker.isUserPlaced else { return }
+        rimTracker.observe(boundingBox: geometry.boundingBox, frameID: currentFrameID)
+    }
 
     func reset() {
         detector.reset()
@@ -105,6 +117,11 @@ final class ShotTracker {
             onEvent?(event)
         }
         publishSnapshot(frameID: frame)
+    }
+
+    /// Push a snapshot without a new ball sighting — used when only the rim changed.
+    func refreshSnapshot(frameID: Int) {
+        publishSnapshot(frameID: frameID)
     }
 
     private func commitPendingBall() {

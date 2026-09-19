@@ -220,6 +220,127 @@ struct HoopGeometryTests {
         #expect(accepted == false)
         #expect(tracker.geometry?.center.x == settled.center.x)
     }
+
+    @Test("View-space placement round-trips through Vision space")
+    func placementRoundTrip() {
+        // A rim in the upper third of the frame. In view space (y down) that is a small
+        // y; in Vision space (y up) it must come back as a large one.
+        let drawn = CGRect(x: 0.42, y: 0.24, width: 0.11, height: 0.03)
+
+        let geometry = HoopGeometry(normalizedViewRect: drawn)
+
+        // Flipped, not mirrored about the wrong axis: view y 0.24-0.27 maps to
+        // Vision y 0.73-0.76, so the rim stays high in the frame.
+        #expect(abs(geometry.center.y - 0.745) < 1e-9)
+        #expect(abs(geometry.center.x - 0.475) < 1e-9)
+        #expect(abs(geometry.horizontalRadius - 0.055) < 1e-9)
+        #expect(abs(geometry.verticalRadius - 0.015) < 1e-9)
+
+        // Reopening the editor must redraw exactly the box that was drawn.
+        let reopened = geometry.normalizedViewRect
+        #expect(abs(reopened.minX - drawn.minX) < 1e-9)
+        #expect(abs(reopened.minY - drawn.minY) < 1e-9)
+        #expect(abs(reopened.width - drawn.width) < 1e-9)
+        #expect(abs(reopened.height - drawn.height) < 1e-9)
+    }
+
+    @Test("A placed rim scores a shot through it")
+    func placedRimDrivesVerdict() {
+        // Place a rim by hand where testRim sits, then confirm the detector scores
+        // against it exactly as it would a detected one.
+        var tracker = RimTracker()
+        tracker.setUserPlaced(HoopGeometry(normalizedViewRect: CGRect(
+            x: 0.455, y: 0.288, width: 0.09, height: 0.024
+        )))
+
+        let placed = tracker.geometry!
+        let arc = shotArc(crossingX: Double(placed.center.x), planeY: Double(placed.center.y))
+
+        let attempts = resolvedAttempts(run(arc, rim: placed).events)
+        #expect(attempts.count == 1)
+        #expect(attempts.first?.result == .made)
+    }
+
+    @Test("A hand-placed rim outranks the detector")
+    func userPlacementWins() throws {
+        var tracker = RimTracker()
+
+        tracker.observe(
+            boundingBox: CGRect(x: 0.45, y: 0.69, width: 0.09, height: 0.024),
+            frameID: 0
+        )
+        #expect(tracker.isUserPlaced == false)
+
+        let placed = HoopGeometry(
+            center: CGPoint(x: 0.62, y: 0.55),
+            verticalRadius: 0.013,
+            horizontalRadius: 0.05
+        )
+        tracker.setUserPlaced(placed)
+
+        #expect(tracker.isUserPlaced)
+        #expect(tracker.isLocked)
+        #expect(tracker.geometry == placed)
+
+        // Later detections must not drag the plane off the user's placement.
+        let accepted = tracker.observe(
+            boundingBox: CGRect(x: 0.45, y: 0.69, width: 0.09, height: 0.024),
+            frameID: 5
+        )
+        #expect(accepted == false)
+        #expect(tracker.geometry == placed)
+    }
+
+    @Test("Rim publishes from the very first detection")
+    func publishesImmediately() {
+        var tracker = RimTracker()
+        tracker.observe(
+            boundingBox: CGRect(x: 0.45, y: 0.69, width: 0.09, height: 0.024),
+            frameID: 0
+        )
+        // Detections are scarce; withholding the rim until several agree can mean no
+        // scoring plane for most of a clip.
+        #expect(tracker.geometry != nil)
+    }
+
+    @Test("One bad first detection does not lock out the real rim")
+    func earlyOutlierDoesNotPoison() throws {
+        var tracker = RimTracker()
+
+        // A rogue first box on the far side of the frame.
+        tracker.observe(boundingBox: CGRect(x: 0.02, y: 0.2, width: 0.09, height: 0.024), frameID: 0)
+
+        // The real rim then shows up repeatedly and must be able to take over.
+        for frame in 1...8 {
+            tracker.observe(
+                boundingBox: CGRect(x: 0.45, y: 0.69, width: 0.09, height: 0.024),
+                frameID: frame
+            )
+        }
+
+        let settled = try #require(tracker.geometry)
+        #expect(abs(settled.center.x - 0.495) < 0.01)
+        #expect(abs(settled.center.y - 0.702) < 0.01)
+    }
+
+    @Test("Clearing a placement hands control back to the detector")
+    func clearingPlacement() {
+        var tracker = RimTracker()
+        tracker.setUserPlaced(
+            HoopGeometry(center: CGPoint(x: 0.6, y: 0.5), verticalRadius: 0.01, horizontalRadius: 0.04)
+        )
+        tracker.clearUserPlacement()
+
+        #expect(tracker.isUserPlaced == false)
+        #expect(tracker.geometry == nil)
+
+        let accepted = tracker.observe(
+            boundingBox: CGRect(x: 0.45, y: 0.69, width: 0.09, height: 0.024),
+            frameID: 1
+        )
+        #expect(accepted)
+        #expect(tracker.geometry != nil)
+    }
 }
 
 // MARK: - Shot outcomes

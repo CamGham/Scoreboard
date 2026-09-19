@@ -25,6 +25,11 @@ struct VideoView: View {
     @State var assetState = AssetState.unSelected
     
     @State var showHistory = false
+
+    /// Rim resolution happens before playback: the detector opens no attempts without a
+    /// scoring plane, so anything that happened before the rim was known would be lost.
+    @State var showRimPlacement = false
+    @State var rimPreflight: RimPreflight.Result?
     var body: some View {
         VStack {
             switch assetState {
@@ -151,6 +156,25 @@ struct VideoView: View {
                                         .foregroundColor(.red)
                                 }
                             }
+                        }
+                        .overlay(alignment: .top) {
+                            if videoProcessor.tracker.gameState.rim == nil {
+                                RimMissingBanner {
+                                    showRimPlacement = true
+                                }
+                                .padding(.top, 60)
+                            }
+                        }
+                        .overlay(alignment: .bottomLeading) {
+                            Button {
+                                showRimPlacement = true
+                            } label: {
+                                Label("Rim", systemImage: "scope")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.circle)
+                            .padding()
                         }
                         .overlay(alignment: .bottom, content: {
                             HStack {
@@ -283,11 +307,43 @@ struct VideoView: View {
             guard let asset else { return }
             assetState = .processing
             do {
-                videoProcessor = try await VideoProcessor.create(videoAsset: asset)
+                let processor = try await VideoProcessor.create(videoAsset: asset)
+                videoProcessor = processor
+
+                // Resolve the rim across the whole clip before a single frame is
+                // processed. Sampling spread-out frames beats the opening seconds: a rim
+                // screened by players at the start usually isn't later on, and the rim
+                // doesn't move, so every sample is equally valid.
+                if let model = await processor.tracker.awaitVisionModel() {
+                    let result = await RimPreflight.scan(asset: asset, model: model)
+                    rimPreflight = result
+
+                    if let geometry = result.geometry {
+                        processor.tracker.seedRim(geometry)
+                    } else {
+                        // Nothing found anywhere in the clip — ask rather than let the
+                        // user watch a whole video that could never score.
+                        showRimPlacement = true
+                    }
+                }
+
                 assetState = .ready
             } catch {
                 assetState = .failed
                 print("error \(error.localizedDescription)")
+            }
+        }
+        .sheet(isPresented: $showRimPlacement) {
+            if let videoProcessor, let frame = videoProcessor.currentFrame {
+                RimPlacementView(
+                    backdrop: frame,
+                    initialGeometry: videoProcessor.tracker.gameState.rim,
+                    onCancel: { showRimPlacement = false },
+                    onConfirm: { geometry in
+                        videoProcessor.tracker.setUserRim(geometry)
+                        showRimPlacement = false
+                    }
+                )
             }
         }
         .sheet(isPresented: $showHistory) {
