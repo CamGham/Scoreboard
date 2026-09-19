@@ -825,3 +825,422 @@ struct BallROIPredictorTests {
         #expect(abs(stats.overallHitRate - (2.0 / 3.0)) < 1e-9)
     }
 }
+
+// MARK: - Seek time base
+
+struct PresentationTimeTests {
+
+    private let rim = HoopGeometry(
+        center: CGPoint(x: 0.5, y: 0.70),
+        verticalRadius: 0.012,
+        horizontalRadius: 0.045
+    )
+
+    /// Stamp an arc with wall-clock times, optionally irregular ones.
+    private func timed(
+        _ observations: [BallObservation],
+        secondsPerFrame: (Int) -> Double
+    ) -> [BallObservation] {
+        var elapsed = 0.0
+        return observations.map { observation in
+            let stamped = BallObservation(
+                frameID: observation.frameID,
+                center: observation.center,
+                radius: observation.radius,
+                confidence: observation.confidence,
+                timeSeconds: elapsed
+            )
+            elapsed += secondsPerFrame(observation.frameID)
+            return stamped
+        }
+    }
+
+    private func resolve(_ observations: [BallObservation]) -> ShotAttempt? {
+        var detector = ShotDetector()
+        var events: [ShotEvent] = []
+        for observation in observations {
+            events.append(contentsOf: detector.process(observation: observation, rim: rim))
+        }
+        return events.compactMap {
+            if case .attemptResolved(let attempt) = $0 { return attempt }
+            return nil
+        }.first
+    }
+
+    @Test("A resolved shot carries a real timestamp to seek to")
+    func attemptCarriesSeekTime() throws {
+        let arc = timed(shotArc(crossingX: 0.5)) { _ in 1.0 / 30.0 }
+
+        let attempt = try #require(resolve(arc))
+        #expect(attempt.result == .made)
+
+        let key = try #require(attempt.keyTime)
+        let start = try #require(attempt.startTime)
+        let end = try #require(attempt.endTime)
+
+        #expect(key > start)
+        #expect(key <= end + 1e-9)
+    }
+
+    @Test("The crossing time is interpolated, not snapped to a frame")
+    func crossingTimeIsInterpolated() throws {
+        let fps = 30.0
+        let arc = timed(shotArc(crossingX: 0.5)) { _ in 1.0 / fps }
+
+        let attempt = try #require(resolve(arc))
+        let crossing = try #require(attempt.scoringCrossing)
+        let time = try #require(crossing.timeSeconds)
+
+        // Lands between two frame boundaries rather than on one.
+        let framePosition = time * fps
+        #expect(abs(framePosition - framePosition.rounded()) > 1e-6)
+    }
+
+    @Test("Variable frame rate breaks index-derived time but not the real timestamp")
+    func variableFrameRateNeedsRealTimestamps() throws {
+        // Every third frame takes twice as long — an ordinary adaptive-frame-rate clip.
+        let arc = timed(shotArc(crossingX: 0.5)) { frame in
+            frame % 3 == 0 ? 2.0 / 30.0 : 1.0 / 30.0
+        }
+
+        let attempt = try #require(resolve(arc))
+        let crossing = try #require(attempt.scoringCrossing)
+        let actual = try #require(crossing.timeSeconds)
+
+        // What you would get assuming a constant 30fps.
+        let assumed = crossing.frame / 30.0
+
+        // They disagree, and the gap grows with clip length — which is exactly why the
+        // timestamp is carried rather than derived.
+        #expect(abs(actual - assumed) > 0.05)
+
+        // The real timestamp stays consistent with the frames either side of it.
+        let before = arc.last(where: { Double($0.frameID) <= crossing.frame })
+        let after = arc.first(where: { Double($0.frameID) >= crossing.frame })
+        #expect(actual >= (before?.timeSeconds ?? 0) - 1e-9)
+        #expect(actual <= (after?.timeSeconds ?? .infinity) + 1e-9)
+    }
+
+    @Test("Shot detection is unaffected by irregular frame timing")
+    func detectionUsesFrameIndexNotWallClock() throws {
+        // The fit runs on frame index, so the same arc must resolve identically whether
+        // the frames were evenly spaced or not.
+        let steady = timed(shotArc(crossingX: 0.5)) { _ in 1.0 / 30.0 }
+        let jittery = timed(shotArc(crossingX: 0.5)) { frame in
+            frame % 3 == 0 ? 2.0 / 30.0 : 1.0 / 30.0
+        }
+
+        let a = try #require(resolve(steady))
+        let b = try #require(resolve(jittery))
+
+        #expect(a.result == b.result)
+        #expect(a.crossings.count == b.crossings.count)
+        #expect(abs(a.scoringCrossing!.normalisedOffset - b.scoringCrossing!.normalisedOffset) < 1e-9)
+    }
+
+    @Test("An attempt keeps the rim it was judged against")
+    func attemptCapturesItsRim() throws {
+        let attempt = try #require(resolve(timed(shotArc(crossingX: 0.5)) { _ in 1.0 / 30.0 }))
+        // A card draws this rim, so it has to be the one that produced the verdict.
+        #expect(attempt.rim == rim)
+    }
+
+    @Test("Without timestamps a shot still resolves, just isn't seekable")
+    func timestampsAreOptional() throws {
+        let attempt = try #require(resolve(shotArc(crossingX: 0.5)))
+        #expect(attempt.result == .made)
+        #expect(attempt.keyTime == nil)
+    }
+}
+
+// MARK: - Replay layout
+
+struct VideoLayoutTests {
+
+    @Test("A quarter-turn swaps the video's width and height")
+    func orientationSwapsDimensions() {
+        let portrait = CGSize(width: 1080, height: 1920)
+
+        // Vision analyses the oriented image, so the overlay must use the same shape.
+        #expect(VideoLayout.orientedSize(portrait, orientation: .up) == portrait)
+        #expect(VideoLayout.orientedSize(portrait, orientation: .right)
+                == CGSize(width: 1920, height: 1080))
+        #expect(VideoLayout.orientedSize(portrait, orientation: .left)
+                == CGSize(width: 1920, height: 1080))
+        #expect(VideoLayout.orientedSize(portrait, orientation: .down) == portrait)
+    }
+
+    @Test("A wide video letterboxes vertically inside a squarer container")
+    func letterboxesVertically() {
+        let rect = VideoLayout.contentRect(
+            for: CGSize(width: 1920, height: 1080),
+            in: CGSize(width: 400, height: 400)
+        )
+
+        #expect(rect.width == 400)
+        #expect(abs(rect.height - 225) < 1e-9)
+        // Centred, with equal bars above and below.
+        #expect(abs(rect.minY - 87.5) < 1e-9)
+        #expect(rect.minX == 0)
+    }
+
+    @Test("A tall video pillarboxes horizontally")
+    func pillarboxesHorizontally() {
+        let rect = VideoLayout.contentRect(
+            for: CGSize(width: 1080, height: 1920),
+            in: CGSize(width: 400, height: 400)
+        )
+
+        #expect(rect.height == 400)
+        #expect(abs(rect.width - 225) < 1e-9)
+        #expect(abs(rect.minX - 87.5) < 1e-9)
+    }
+
+    @Test("Normalized points land inside the picture, not the container")
+    func mapsIntoContentRect() {
+        let container = CGSize(width: 400, height: 400)
+        let content = VideoLayout.contentRect(for: CGSize(width: 1920, height: 1080), in: container)
+
+        // Centre of the frame is the centre of the picture.
+        let centre = VideoLayout.point(normalized: CGPoint(x: 0.5, y: 0.5), in: content)
+        #expect(abs(centre.x - 200) < 1e-9)
+        #expect(abs(centre.y - 200) < 1e-9)
+
+        // Top of the frame (y = 1 in Vision) is the top of the PICTURE, inside the
+        // letterbox — mapping against the container would put it at the view's top edge.
+        let top = VideoLayout.point(normalized: CGPoint(x: 0.5, y: 1.0), in: content)
+        #expect(abs(top.y - content.minY) < 1e-9)
+        #expect(top.y > 0)
+
+        let bottom = VideoLayout.point(normalized: CGPoint(x: 0.5, y: 0.0), in: content)
+        #expect(abs(bottom.y - content.maxY) < 1e-9)
+        #expect(bottom.y < container.height)
+    }
+
+    @Test("Vision's y-up flips to the view's y-down")
+    func flipsVerticalAxis() {
+        let content = CGRect(x: 0, y: 0, width: 100, height: 100)
+
+        let high = VideoLayout.point(normalized: CGPoint(x: 0.5, y: 0.9), in: content)
+        let low = VideoLayout.point(normalized: CGPoint(x: 0.5, y: 0.1), in: content)
+
+        // High in the frame must draw nearer the top of the view.
+        #expect(high.y < low.y)
+    }
+
+    @Test("A degenerate container doesn't produce a broken rect")
+    func handlesZeroSizes() {
+        let rect = VideoLayout.contentRect(for: .zero, in: CGSize(width: 100, height: 100))
+        #expect(rect.width == 100)
+        #expect(rect.height == 100)
+    }
+}
+
+struct BallInterpolationTests {
+
+    private func observation(_ frame: Int, _ x: Double, _ y: Double, _ t: Double) -> BallObservation {
+        BallObservation(
+            frameID: frame, center: CGPoint(x: x, y: y),
+            radius: 0.02, confidence: 0.9, timeSeconds: t
+        )
+    }
+
+    @Test("The marker interpolates between sightings rather than hopping")
+    func interpolatesBetweenSightings() throws {
+        let trajectory = [
+            observation(0, 0.20, 0.40, 1.0),
+            observation(1, 0.30, 0.60, 2.0)
+        ]
+
+        let midway = try #require(interpolatedBallPosition(trajectory: trajectory, atTime: 1.5))
+        #expect(abs(midway.x - 0.25) < 1e-9)
+        #expect(abs(midway.y - 0.50) < 1e-9)
+    }
+
+    @Test("Interpolation uses real time, not frame index")
+    func usesRealTimeSpacing() throws {
+        // The second gap takes three times as long as the first — a variable-frame-rate
+        // clip. Interpolating by index would put the marker in the wrong place.
+        let trajectory = [
+            observation(0, 0.0, 0.5, 0.0),
+            observation(1, 0.1, 0.5, 1.0),
+            observation(2, 0.4, 0.5, 4.0)
+        ]
+
+        let at = try #require(interpolatedBallPosition(trajectory: trajectory, atTime: 2.5))
+        // Halfway through the second gap in TIME is x = 0.25.
+        #expect(abs(at.x - 0.25) < 1e-9)
+    }
+
+    @Test("Times outside the trajectory clamp to its ends")
+    func clampsOutsideRange() throws {
+        let trajectory = [
+            observation(0, 0.2, 0.4, 1.0),
+            observation(1, 0.3, 0.6, 2.0)
+        ]
+
+        let before = try #require(interpolatedBallPosition(trajectory: trajectory, atTime: 0.0))
+        let after = try #require(interpolatedBallPosition(trajectory: trajectory, atTime: 99.0))
+
+        #expect(before == CGPoint(x: 0.2, y: 0.4))
+        #expect(after == CGPoint(x: 0.3, y: 0.6))
+    }
+
+    @Test("Untimed sightings yield no marker")
+    func requiresTimestamps() {
+        let untimed = [
+            BallObservation(frameID: 0, center: CGPoint(x: 0.2, y: 0.4), radius: 0.02, confidence: 0.9)
+        ]
+        #expect(interpolatedBallPosition(trajectory: untimed, atTime: 1.0) == nil)
+        #expect(interpolatedBallPosition(trajectory: [], atTime: 1.0) == nil)
+    }
+}
+
+// MARK: - User corrections
+
+@MainActor
+struct CorrectionTests {
+
+    private func attempt(
+        _ result: ShotAttempt.Result,
+        verdict: ShotAttempt.UserVerdict? = nil
+    ) -> ShotAttempt {
+        ShotAttempt(
+            id: UUID(), startFrame: 0, endFrame: 10, result: result,
+            trajectory: [], crossings: [], rimContacts: 0,
+            apexY: nil, wasDetectedLate: false, rim: nil, userVerdict: verdict
+        )
+    }
+
+    @Test("A ruling overrides the detector without erasing it")
+    func rulingPreservesDetectorCall() {
+        let shot = attempt(.missed, verdict: .made)
+
+        // Both survive: the detector's call is what's being measured, the user's is
+        // the ground truth it's measured against.
+        #expect(shot.result == .missed)
+        #expect(shot.effectiveResult == .made)
+        #expect(shot.isCorrected)
+    }
+
+    @Test("Agreeing with the detector is not a correction")
+    func agreementIsNotCorrection() {
+        let shot = attempt(.made, verdict: .made)
+        #expect(shot.isCorrected == false)
+        #expect(shot.effectiveResult == .made)
+    }
+
+    @Test("Correcting an old shot updates the score retroactively")
+    func correctionsApplyRetroactively() {
+        let state = GameState()
+        let made = attempt(.made)
+        let missed = attempt(.missed)
+
+        state.handle(.attemptResolved(made))
+        state.handle(.attemptResolved(missed))
+
+        #expect(state.stats.attempts == 2)
+        #expect(state.stats.makes == 1)
+
+        // Stats are derived, not accumulated, so a late ruling is reflected at once —
+        // counters incremented as events arrived could not do this.
+        state.setVerdict(.made, for: missed.id)
+
+        #expect(state.stats.makes == 2)
+        #expect(state.stats.points == 4)
+        #expect(abs(state.stats.fieldGoalPercentage - 100) < 1e-9)
+    }
+
+    @Test("A shot ruled not-a-shot leaves the totals entirely")
+    func falsePositiveLeavesTotals() {
+        let state = GameState()
+        let real = attempt(.made)
+        let bogus = attempt(.made)
+
+        state.handle(.attemptResolved(real))
+        state.handle(.attemptResolved(bogus))
+        #expect(state.stats.attempts == 2)
+
+        state.setVerdict(.notAShot, for: bogus.id)
+
+        // Not a miss — it never happened, so it can't count against the percentage.
+        #expect(state.stats.attempts == 1)
+        #expect(state.stats.makes == 1)
+        #expect(abs(state.stats.fieldGoalPercentage - 100) < 1e-9)
+    }
+
+    @Test("Ruling on an abandoned attempt promotes it into the totals")
+    func rulingResolvesAbandoned() {
+        let state = GameState()
+        let lost = attempt(.abandoned)
+
+        state.handle(.attemptResolved(lost))
+        #expect(state.stats.attempts == 0)
+        #expect(state.abandonedAttempts.count == 1)
+
+        state.setVerdict(.made, for: lost.id)
+
+        #expect(state.stats.attempts == 1)
+        #expect(state.stats.makes == 1)
+    }
+
+    @Test("Clearing a ruling hands the shot back to the detector")
+    func clearingRulingRestoresDetectorCall() {
+        let state = GameState()
+        let shot = attempt(.missed)
+        state.handle(.attemptResolved(shot))
+
+        state.setVerdict(.made, for: shot.id)
+        #expect(state.stats.makes == 1)
+
+        state.setVerdict(nil, for: shot.id)
+
+        #expect(state.stats.makes == 0)
+        #expect(state.stats.attempts == 1)
+        #expect(state.attempt(withID: shot.id)?.isCorrected == false)
+    }
+
+    @Test("Accuracy counts only shots the user has ruled on")
+    func accuracyIgnoresUnreviewed() {
+        let state = GameState()
+        let agreed = attempt(.made)
+        let flipped = attempt(.made)
+        let bogus = attempt(.missed)
+        let untouched = attempt(.missed)
+
+        for shot in [agreed, flipped, bogus, untouched] {
+            state.handle(.attemptResolved(shot))
+        }
+
+        state.setVerdict(.made, for: agreed.id)
+        state.setVerdict(.missed, for: flipped.id)
+        state.setVerdict(.notAShot, for: bogus.id)
+
+        let accuracy = state.accuracy
+        #expect(accuracy.reviewed == 3)
+        #expect(accuracy.agreed == 1)
+        #expect(accuracy.wrongCalls == 1)
+        #expect(accuracy.falsePositives == 1)
+        #expect(abs(accuracy.agreementRate - (100.0 / 3.0)) < 0.01)
+    }
+
+    @Test("Accuracy is zero-safe before anything is reviewed")
+    func accuracyBeforeReview() {
+        let state = GameState()
+        state.handle(.attemptResolved(attempt(.made)))
+
+        #expect(state.accuracy.reviewed == 0)
+        #expect(state.accuracy.agreementRate == 0)
+    }
+
+    @Test("Ruling an unknown id changes nothing")
+    func unknownIdIsIgnored() {
+        let state = GameState()
+        state.handle(.attemptResolved(attempt(.made)))
+
+        state.setVerdict(.missed, for: UUID())
+
+        #expect(state.stats.attempts == 1)
+        #expect(state.stats.makes == 1)
+    }
+}

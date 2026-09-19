@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 
 /// Compact heads-up display over the video: running tally plus what the detector is
 /// doing right now. Mostly a tuning aid — if a shot isn't being picked up, this shows
@@ -67,6 +68,16 @@ struct ShotTimelineView: View {
     /// Detection tally, so the moving crop can be judged against the full-frame sweep.
     var ballStats: BallDetectionStats?
 
+    /// Supplies the still frame each card is drawn on. Nil for the live camera path,
+    /// where there is no file to seek back into.
+    var frameProvider: ShotFrameProvider?
+
+    /// Backing asset and its oriented size, for replaying a shot. Nil on the camera path.
+    var asset: AVAsset?
+    var orientedVideoSize: CGSize = .zero
+
+    @State private var replaying: ShotAttempt?
+
     var body: some View {
         NavigationStack {
             List {
@@ -83,6 +94,23 @@ struct ShotTimelineView: View {
                     Text("Totals")
                 } footer: {
                     Text("Every make counts as two. Separating twos from threes needs court calibration, which isn't wired up yet.")
+                }
+
+                if gameState.accuracy.reviewed > 0 {
+                    let accuracy = gameState.accuracy
+                    Section {
+                        LabeledContent("Shots reviewed", value: "\(accuracy.reviewed)")
+                        LabeledContent(
+                            "Detector agreed",
+                            value: String(format: "%d (%.0f%%)", accuracy.agreed, accuracy.agreementRate)
+                        )
+                        LabeledContent("Wrong call", value: "\(accuracy.wrongCalls)")
+                        LabeledContent("Not a shot", value: "\(accuracy.falsePositives)")
+                    } header: {
+                        Text("Detector accuracy")
+                    } footer: {
+                        Text("Measured against your corrections. Every shot you rule on is a labelled example, so this becomes more meaningful the more you review.")
+                    }
                 }
 
                 if let stats = ballStats {
@@ -118,14 +146,27 @@ struct ShotTimelineView: View {
                     }
 
                     ForEach(gameState.shotTimeline.reversed()) { attempt in
-                        ShotRow(attempt: attempt)
+                        ShotCardView(attempt: attempt, provider: frameProvider)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                // Only seekable shots can be replayed.
+                                if asset != nil, attempt.keyTime != nil {
+                                    replaying = attempt
+                                }
+                            }
                     }
                 }
 
                 if !gameState.abandonedAttempts.isEmpty {
                     Section {
                         ForEach(gameState.abandonedAttempts.reversed()) { attempt in
-                            ShotRow(attempt: attempt)
+                            ShotCardView(attempt: attempt, provider: frameProvider)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if asset != nil, attempt.keyTime != nil {
+                                        replaying = attempt
+                                    }
+                                }
                         }
                     } header: {
                         Text("Unresolved")
@@ -136,85 +177,21 @@ struct ShotTimelineView: View {
             }
             .navigationTitle("Shot timeline")
             .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-}
+            .fullScreenCover(item: $replaying) { attempt in
+                if let asset {
+                    // Re-read from game state rather than using the captured copy, so a
+                    // ruling made in the sheet is reflected in the sheet.
+                    let live = gameState.attempt(withID: attempt.id) ?? attempt
 
-private struct ShotRow: View {
-    let attempt: ShotAttempt
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: symbol)
-                    .foregroundStyle(colour)
-                Text(attempt.result.rawValue.capitalized)
-                    .font(.headline)
-
-                Spacer()
-
-                Text(frameRange)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                if let crossing = decidingCrossing {
-                    // 0.0 is dead centre of the ring, 1.0 is the ring itself.
-                    Tag(text: String(format: "offset %.2f", abs(crossing.normalisedOffset)))
-                }
-                if attempt.rimContacts > 0 {
-                    Tag(text: "rim ×\(attempt.rimContacts)")
-                }
-                if attempt.wasDetectedLate {
-                    Tag(text: "late pickup")
-                }
-                if attempt.isCloseCall {
-                    Tag(text: "close call", tint: .orange)
+                    ShotReplayView(
+                        attempt: live,
+                        asset: asset,
+                        orientedVideoSize: orientedVideoSize,
+                        onDismiss: { replaying = nil },
+                        onVerdict: { gameState.setVerdict($0, for: attempt.id) }
+                    )
                 }
             }
         }
-        .padding(.vertical, 2)
-    }
-
-    private var decidingCrossing: RimCrossing? {
-        attempt.crossings.min(by: { abs($0.normalisedOffset) < abs($1.normalisedOffset) })
-    }
-
-    private var frameRange: String {
-        guard let end = attempt.endFrame else { return "\(attempt.startFrame)–" }
-        return "\(attempt.startFrame)–\(end)"
-    }
-
-    private var symbol: String {
-        switch attempt.result {
-        case .made: return "checkmark.circle.fill"
-        case .missed: return "xmark.circle.fill"
-        case .abandoned: return "questionmark.circle.fill"
-        case .inProgress: return "circle.dotted"
-        }
-    }
-
-    private var colour: Color {
-        switch attempt.result {
-        case .made: return .green
-        case .missed: return .red
-        case .abandoned: return .secondary
-        case .inProgress: return .yellow
-        }
-    }
-}
-
-private struct Tag: View {
-    let text: String
-    var tint: Color = .secondary
-
-    var body: some View {
-        Text(text)
-            .font(.caption2.monospacedDigit())
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(tint.opacity(0.15), in: Capsule())
-            .foregroundStyle(tint)
     }
 }

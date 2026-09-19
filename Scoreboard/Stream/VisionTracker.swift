@@ -97,9 +97,12 @@ class VisionTracker {
     /// The frame index used to live inside `trackObservations`, which meant frames that
     /// only ran detection never advanced it — several observations would share a frame
     /// ID and collapse the trajectory fit's time axis.
-    func beginFrame() {
+    /// - Parameter timeSeconds: presentation time of this frame. Optional because the
+    ///   frame index alone is enough to detect shots; the timestamp is what makes them
+    ///   seekable afterwards.
+    func beginFrame(timeSeconds: Double? = nil) {
         frameCounter &+= 1
-        shotTracker.beginFrame(frameCounter)
+        shotTracker.beginFrame(frameCounter, timeSeconds: timeSeconds)
     }
 
     /// Detect the ball for this frame, inside a crop around its predicted position.

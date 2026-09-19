@@ -23,9 +23,45 @@ struct RimCrossing: Equatable {
 
     /// True when the ball centre passed through the opening with room for the ball's width.
     let isClean: Bool
+
+    /// When the crossing happened, in seconds from the start of the media —
+    /// interpolated between the two straddling frames, same as the position.
+    /// This is what a replay or a still frame seeks to.
+    let timeSeconds: Double?
 }
 
 struct ShotAttempt: Identifiable, Equatable {
+
+    /// What the user says actually happened, when they disagree with the detector or
+    /// resolve something it couldn't.
+    ///
+    /// Kept *alongside* `result` rather than overwriting it. Both are needed: the
+    /// detector's call is what you are measuring, the user's is the ground truth you are
+    /// measuring it against. Overwriting would destroy the comparison the moment it
+    /// became useful.
+    enum UserVerdict: String, CaseIterable {
+        case made
+        case missed
+        /// Not a shot at all — a pass, a rebound, a detector artefact.
+        case notAShot
+
+        var label: String {
+            switch self {
+            case .made: return "Made"
+            case .missed: return "Missed"
+            case .notAShot: return "Not a shot"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .made: return "checkmark.circle.fill"
+            case .missed: return "xmark.circle.fill"
+            case .notAShot: return "nosign"
+            }
+        }
+    }
+
     enum Result: String {
         case inProgress
         case made
@@ -57,6 +93,55 @@ struct ShotAttempt: Identifiable, Equatable {
     /// the early trajectory is missing.
     var wasDetectedLate: Bool
 
+    /// The rim this attempt was judged against, captured at the time so a card or replay
+    /// draws the geometry that actually produced the verdict.
+    var rim: HoopGeometry?
+
+    /// The user's ruling, if they have given one.
+    var userVerdict: UserVerdict?
+
+    /// The verdict that counts — the user's where they gave one, else the detector's.
+    var effectiveResult: Result {
+        switch userVerdict {
+        case .made: return .made
+        case .missed: return .missed
+        case .notAShot, .none: return result
+        }
+    }
+
+    /// Whether this belongs in the field-goal totals. Something ruled `notAShot`, still
+    /// in flight, or abandoned without a ruling does not.
+    var isCountedAttempt: Bool {
+        guard userVerdict != .notAShot else { return false }
+        return effectiveResult == .made || effectiveResult == .missed
+    }
+
+    var isCountedMake: Bool {
+        isCountedAttempt && effectiveResult == .made
+    }
+
+    /// True when the user's ruling contradicts the detector.
+    var isCorrected: Bool {
+        guard let userVerdict else { return false }
+        switch userVerdict {
+        case .made: return result != .made
+        case .missed: return result != .missed
+        case .notAShot: return true
+        }
+    }
+
+    /// Media time of the first and last sighting, in seconds.
+    var startTime: Double? { trajectory.first?.timeSeconds }
+    var endTime: Double? { trajectory.last?.timeSeconds }
+
+    /// The single most representative moment of the attempt: the rim crossing if there
+    /// was one, otherwise the end. This is the frame worth showing on a card.
+    var keyTime: Double? {
+        crossings.first(where: { $0.isClean })?.timeSeconds
+            ?? crossings.last?.timeSeconds
+            ?? endTime
+    }
+
     /// The crossing that decided a make.
     var scoringCrossing: RimCrossing? {
         crossings.first(where: { $0.isClean })
@@ -72,7 +157,10 @@ struct ShotAttempt: Identifiable, Equatable {
     }
 
     static func == (lhs: ShotAttempt, rhs: ShotAttempt) -> Bool {
-        lhs.id == rhs.id && lhs.result == rhs.result && lhs.endFrame == rhs.endFrame
+        lhs.id == rhs.id
+            && lhs.result == rhs.result
+            && lhs.endFrame == rhs.endFrame
+            && lhs.userVerdict == rhs.userVerdict
     }
 }
 
@@ -337,7 +425,9 @@ struct ShotDetector {
             crossings: [],
             rimContacts: 0,
             apexY: trajectory.map { Double($0.center.y) }.max(),
-            wasDetectedLate: late
+            wasDetectedLate: late,
+            rim: rim,
+            userVerdict: nil
         )
 
         currentAttempt = attempt
@@ -466,6 +556,13 @@ struct ShotDetector {
         let x = before.center.x + (fraction * (after.center.x - before.center.x))
         let frame = Double(before.frameID) + (fraction * Double(after.frameID - before.frameID))
 
+        // Interpolated in real time too, not derived from the frame index — the gap
+        // between two frames is not guaranteed to be 1/fps.
+        let timeSeconds: Double? = {
+            guard let t0 = before.timeSeconds, let t1 = after.timeSeconds else { return nil }
+            return t0 + (Double(fraction) * (t1 - t0))
+        }()
+
         let offsetFromCentre = x - rim.center.x
         let normalisedOffset = rim.horizontalRadius > 0
             ? Double(offsetFromCentre / rim.horizontalRadius)
@@ -482,7 +579,8 @@ struct ShotDetector {
             frame: frame,
             x: Double(x),
             normalisedOffset: normalisedOffset,
-            isClean: abs(offsetFromCentre) <= usableHalfWidth
+            isClean: abs(offsetFromCentre) <= usableHalfWidth,
+            timeSeconds: timeSeconds
         )
     }
 

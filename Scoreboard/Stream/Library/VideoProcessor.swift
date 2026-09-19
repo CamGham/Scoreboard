@@ -67,6 +67,12 @@ class VideoProcessor {
     func clear() {
         tracker.clear()
     }
+
+    /// Track size after the preferred transform is applied — the shape Vision analysed,
+    /// and the shape an overlay has to be laid out against.
+    var orientedVideoSize: CGSize {
+        VideoLayout.orientedSize(trackSize, orientation: orientation)
+    }
     
     static func create(videoAsset: AVURLAsset) async throws -> VideoProcessor {
         let _ = try await videoAsset.load(.isPlayable)
@@ -136,12 +142,22 @@ class VideoProcessor {
         return self.videoReader.startReading()
     }
     
+    /// Presentation time of the frame most recently returned by `readNextFrame()`.
+    ///
+    /// Read from the sample buffer before it is invalidated. Without this there is no
+    /// way back from a detected shot to a position in the file: the frame index can't be
+    /// converted to a time on variable-frame-rate footage, which phone video often is.
+    private(set) var currentFrameTime: Double?
+
     func readNextFrame() -> CVImageBuffer? {
         guard let sampleBuffer = self.videoAssetReaderOutput.copyNextSampleBuffer(),
               let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             playback = .pause
             return nil
         }
+
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        currentFrameTime = presentationTime.isValid ? presentationTime.seconds : nil
 
         let ciImage = CIImage(cvPixelBuffer: buff)
         currentFrame = ciImage.oriented(orientation).image
@@ -159,7 +175,7 @@ class VideoProcessor {
                         return
                     }
                     frames += 1
-                    tracker.beginFrame()
+                    tracker.beginFrame(timeSeconds: currentFrameTime)
 
                     // The ball gets its own detection pass every frame, inside a crop
                     // around its predicted position. Players keep the full-frame detect
@@ -186,7 +202,7 @@ class VideoProcessor {
                     return
                 }
                 frames += 1
-                tracker.beginFrame()
+                tracker.beginFrame(timeSeconds: currentFrameTime)
 
                 // The ball gets its own detection pass every frame, inside a crop
                 // around its predicted position. Players keep the full-frame detect

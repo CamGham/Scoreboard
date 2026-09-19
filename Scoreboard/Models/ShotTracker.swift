@@ -46,6 +46,7 @@ final class ShotTracker {
     /// guarantees the detector sees exactly one sample per frame — feeding it twice
     /// double-weights that frame in the trajectory fit.
     private var currentFrameID: Int = 0
+    private var currentFrameTime: Double?
     private var pendingBall: BallObservation?
 
     var onSnapshot: ((GameSnapshot) -> Void)?
@@ -81,15 +82,19 @@ final class ShotTracker {
         rimTracker.reset()
         pendingBall = nil
         currentFrameID = 0
+        currentFrameTime = nil
     }
 
     /// Open a new frame. Commits whatever the previous frame gathered.
     ///
     /// The driver must call this exactly once per video frame, before running any
     /// detection or tracking for it.
-    func beginFrame(_ frameID: Int) {
+    /// - Parameter timeSeconds: the frame's presentation time. Carried alongside the
+    ///   frame index so shots can be seeked to later; see `BallObservation.timeSeconds`.
+    func beginFrame(_ frameID: Int, timeSeconds: Double? = nil) {
         commitPendingBall()
         currentFrameID = frameID
+        currentFrameTime = timeSeconds
         pendingBall = nil
     }
 
@@ -104,7 +109,8 @@ final class ShotTracker {
         let observation = BallObservation(
             frameID: frameID,
             boundingBox: boundingBox,
-            confidence: confidence
+            confidence: confidence,
+            timeSeconds: currentFrameTime
         )
 
         if let existing = pendingBall, existing.confidence >= observation.confidence {
