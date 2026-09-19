@@ -10,17 +10,13 @@ import PhotosUI
 
 struct MediaTypeChooser: View {
     @State var showLiveCamera = false
-    @State var selectedImages: [PhotosPickerItem] = [] {
-        didSet {
-            
-        }
-    }
+    @State var showVideo = false
     
     var body: some View {
         HStack {
             Spacer()
-            PhotosPicker(selection: $selectedImages, photoLibrary: .shared()) {
-                Text("Library")
+            Button("Library") {
+                showVideo.toggle()
             }
             .buttonStyle(.bordered)
             
@@ -35,6 +31,9 @@ struct MediaTypeChooser: View {
         }
         .fullScreenCover(isPresented: $showLiveCamera) {
             CameraView(camera: CameraModel(), dismissCam: $showLiveCamera)
+        }
+        .fullScreenCover(isPresented: $showVideo) {
+            VideoView()
         }
     }
 }
