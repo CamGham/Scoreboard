@@ -35,6 +35,7 @@ class VideoProcessor {
     
     // helpers
     var preferredTransform: CGAffineTransform
+    var orientation: CGImagePropertyOrientation
     var trackSize: CGSize
     
     var tracker = VisionTracker()
@@ -45,15 +46,23 @@ class VideoProcessor {
                  videoAssetReaderOutput: AVAssetReaderTrackOutput,
                  firstFrame: Image?,
                  preferredTransform: CGAffineTransform,
+                 orientation: CGImagePropertyOrientation,
                  trackSize: CGSize) {
+        print("DEBUG: PROCESSER CREATED")
             self.videoAsset = videoAsset
             self.videoTrack = videoTrack
             self.videoReader = videoReader
             self.videoAssetReaderOutput = videoAssetReaderOutput
             self.currentFrame = firstFrame
             self.preferredTransform = preferredTransform
+            self.orientation = orientation
             self.trackSize = trackSize
         }
+    
+    deinit {
+        tracker.clear()
+        print("DEBUG: PROCESSER DESTROYED")
+    }
     
     func clear() {
         tracker.clear()
@@ -70,6 +79,7 @@ class VideoProcessor {
         
         let trackSize = try await videoTrack.load(.naturalSize)
         let preferredTransform = try await videoTrack.load(.preferredTransform)
+        var orientation: CGImagePropertyOrientation = .up
         
         let videoReader = try AVAssetReader(asset: videoAsset)
         let outputSetting = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
@@ -88,12 +98,20 @@ class VideoProcessor {
             
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
             
-            let rotated = ciImage.transformed(by: preferredTransform)
-            let flipped = rotated.transformed(by: CGAffineTransform(scaleX: -1, y: -1))
-            let corrected = flipped.transformed(by:
-                CGAffineTransform(translationX: 0, y: -flipped.extent.height)
-            )
-            firstFrame = corrected.image   
+            switch (preferredTransform.a, preferredTransform.b, preferredTransform.c, preferredTransform.d) {
+            case (0, 1, -1, 0):
+                orientation = .right
+            case (0, -1, 1, 0):
+                orientation = .left
+            case (1, 0, 0, 1):
+                orientation = .up
+            case (-1, 0, 0, -1):
+                orientation = .down
+            default:
+                orientation = .up
+            }
+            let corrected = ciImage.oriented(orientation)
+            firstFrame = corrected.image
         }
         
         return VideoProcessor(
@@ -103,6 +121,7 @@ class VideoProcessor {
             videoAssetReaderOutput: videoAssetReaderOutput,
             firstFrame: firstFrame,
             preferredTransform: preferredTransform,
+            orientation: orientation,
             trackSize: trackSize
         )
     }
@@ -125,13 +144,7 @@ class VideoProcessor {
         }
 
         let ciImage = CIImage(cvPixelBuffer: buff)
-        
-        let rotated = ciImage.transformed(by: preferredTransform)
-        let flipped = rotated.transformed(by: CGAffineTransform(scaleX: -1, y: -1)) // neg x for makes portrait work
-        let corrected = flipped.transformed(by:
-            CGAffineTransform(translationX: 0, y: -flipped.extent.height)
-        )
-        currentFrame = corrected.image
+        currentFrame = ciImage.oriented(orientation).image
         
         CMSampleBufferInvalidate(sampleBuffer)
         return buff
@@ -141,20 +154,49 @@ class VideoProcessor {
         do {
             while playback == .resume {
                 try autoreleasepool {
-                    guard let buf = readNextFrame() else { return }
-                    frames += 1
-                    
-                    if tracker.shouldPredict || (frames % 10 == 0) {
-                        tracker.shouldPredict = true
-                        try tracker.makeObservations(pixelBuffer: buf, orientation: .right)
-                    } else {
-                        
-                        try tracker.trackObservations(pixelBuffer: buf, orientation: .right)
-                    
-                        if !tracker.shouldPredict && tracker.shouldPredictBall {
-                            try tracker.makeObservations(pixelBuffer: buf, orientation: .right)
-                        }
+                    guard let buf = readNextFrame() else {
+                        tracker.clear()
+                        return
                     }
+                    frames += 1
+                    tracker.beginFrame()
+
+                    // The ball gets its own detection pass every frame, inside a crop
+                    // around its predicted position. Players keep the full-frame detect
+                    // plus track path on their existing cadence.
+                    tracker.detectBall(pixelBuffer: buf, orientation: orientation)
+
+                    if tracker.shouldPredict {
+                        try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
+                    } else {
+                        try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
+                    }
+                }
+            }
+        } catch {
+            
+        }
+    }
+    
+    func next() async {
+        do {
+            try autoreleasepool {
+                guard let buf = readNextFrame() else {
+                    tracker.clear()
+                    return
+                }
+                frames += 1
+                tracker.beginFrame()
+
+                // The ball gets its own detection pass every frame, inside a crop
+                // around its predicted position. Players keep the full-frame detect
+                // plus track path on their existing cadence.
+                tracker.detectBall(pixelBuffer: buf, orientation: orientation)
+
+                if tracker.shouldPredict {
+                    try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
+                } else {
+                    try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
                 }
             }
         } catch {
