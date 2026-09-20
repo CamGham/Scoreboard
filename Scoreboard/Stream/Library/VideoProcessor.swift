@@ -23,6 +23,13 @@ enum PlaybackState {
 class VideoProcessor {
     var currentFrame: Image?
     var playback = PlaybackState.pause
+
+    /// True once the reader has run out of frames — the whole clip has been analysed.
+    ///
+    /// Distinct from `playback == .pause`, which is also true whenever the user simply
+    /// stopped. Only this says the analysis is finished and its results are final, which
+    /// is what the review view waits on.
+    var isComplete = false
     
     // video asset
     var videoAsset: AVAsset
@@ -153,6 +160,17 @@ class VideoProcessor {
         guard let sampleBuffer = self.videoAssetReaderOutput.copyNextSampleBuffer(),
               let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             playback = .pause
+
+            // A nil sample means either the end of the clip or a reader that gave up.
+            // Only the former counts as a finished analysis; the status lags the last
+            // sample by a moment, so `.reading` here still means it ran to the end.
+            switch videoReader.status {
+            case .failed, .cancelled:
+                break
+            default:
+                isComplete = true
+            }
+
             return nil
         }
 

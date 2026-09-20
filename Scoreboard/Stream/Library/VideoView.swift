@@ -46,6 +46,10 @@ struct VideoView: View {
     /// Runs already stored for this video, checked before analysing again.
     @State var existingRuns: [RunMetadata] = []
     @State var showExistingAnalysisAlert = false
+
+    /// Shown the moment the last frame has been analysed. The processing view is a tuning
+    /// instrument; this is what the result is actually for.
+    @State var showAnalysisReview = false
     var body: some View {
         VStack {
             switch assetState {
@@ -413,6 +417,25 @@ struct VideoView: View {
         }
         .onChange(of: showHistory) { _, isShowing in
             if isShowing { saveRun() }
+        }
+        // The reader has run out of frames: the numbers are final, so save them and hand
+        // the user the reviewable version of the clip.
+        .onChange(of: videoProcessor?.isComplete ?? false) { _, finished in
+            guard finished else { return }
+            saveRun()
+            showAnalysisReview = true
+        }
+        .fullScreenCover(isPresented: $showAnalysisReview) {
+            if let videoProcessor, let asset {
+                AnalysisReviewView(
+                    gameState: videoProcessor.tracker.gameState,
+                    asset: asset,
+                    orientedVideoSize: videoProcessor.orientedVideoSize,
+                    onDismiss: { showAnalysisReview = false },
+                    frameProvider: frameProvider,
+                    ballStats: videoProcessor.tracker.ballDetector?.stats
+                )
+            }
         }
         .onDisappear { saveRun() }
         .sheet(isPresented: $showHistory) {

@@ -119,6 +119,10 @@ struct SavedGameDetailView: View {
     @State private var runCount = 0
     @State private var showComparison = false
 
+    /// The scrubber view over the original clip. Only offered once the video itself has
+    /// been resolved — there is nothing to scrub without it.
+    @State private var showReview = false
+
     var body: some View {
         Group {
             if isLoading {
@@ -147,6 +151,17 @@ struct SavedGameDetailView: View {
         .navigationTitle(summary.analysedAt.formatted(.dateTime.day().month().hour().minute()))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if asset != nil, !gameState.reviewableAttempts.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showReview = true
+                    } label: {
+                        Label("Review", systemImage: "film")
+                    }
+                    .accessibilityHint("Scrub the whole video with every shot marked")
+                }
+            }
+
             if runCount > 1 {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -155,6 +170,18 @@ struct SavedGameDetailView: View {
                         Label("Compare", systemImage: "arrow.left.arrow.right")
                     }
                 }
+            }
+        }
+        .fullScreenCover(isPresented: $showReview) {
+            if let asset {
+                AnalysisReviewView(
+                    gameState: gameState,
+                    asset: asset,
+                    orientedVideoSize: orientedVideoSize,
+                    onDismiss: { showReview = false },
+                    frameProvider: frameProvider,
+                    ballStats: run?.ballStats
+                )
             }
         }
         .sheet(isPresented: $showComparison) {
