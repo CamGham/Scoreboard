@@ -85,6 +85,12 @@ struct ShotStore {
         directory(for: assetIdentifier).appending(path: "summary.json")
     }
 
+    /// Sections the user has marked for another look. Third lifetime alongside runs and
+    /// truth: work still to do, rather than what happened or what was decided.
+    private func planURL(for assetIdentifier: String) -> URL {
+        directory(for: assetIdentifier).appending(path: "reanalysis.json")
+    }
+
     // MARK: Listing
 
     /// Headlines for every saved video, newest first.
@@ -116,6 +122,19 @@ struct ShotStore {
 
     func saveTruth(_ document: GroundTruthDocument) throws {
         try write(document, to: truthURL(for: document.assetIdentifier))
+    }
+
+    // MARK: Re-analysis marks
+
+    func loadPlan(for assetIdentifier: String) -> ReanalysisPlan {
+        guard let plan: ReanalysisPlan = read(planURL(for: assetIdentifier)) else {
+            return ReanalysisPlan(assetIdentifier: assetIdentifier)
+        }
+        return plan
+    }
+
+    func savePlan(_ plan: ReanalysisPlan) throws {
+        try write(plan, to: planURL(for: plan.assetIdentifier))
     }
 
     // MARK: Analysis runs

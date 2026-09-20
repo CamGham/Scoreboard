@@ -30,9 +30,23 @@ struct AnalysisReviewView: View {
 
     var ballStats: BallDetectionStats?
 
+    /// Stretches of the clip already flagged for another pass.
+    var sections: [ReanalysisSection] = []
+
+    /// Reports the new set whenever a section is marked or removed, so the caller can
+    /// write it to disk. Nil leaves the bar read-only — a video whose marks can't be
+    /// stored shouldn't offer to take them.
+    var onSectionsChanged: (([ReanalysisSection]) -> Void)?
+
     @State private var player: AnalysisReviewPlayer?
     @State private var showsChrome = true
     @State private var showTimeline = false
+
+    /// The section being marked. Non-nil is "marking mode": the bar edits this range
+    /// instead of seeking, and the ruling bar gets out of the way.
+    @State private var draftRange: ClosedRange<Double>?
+
+    @State private var showSections = false
 
     private static let rates: [Float] = [0.25, 0.5, 1.0, 2.0]
 
@@ -68,6 +82,19 @@ struct AnalysisReviewView: View {
             // still registered.
             player?.stop()
             player = nil
+        }
+        .sheet(isPresented: $showSections) {
+            ReanalysisSectionsView(
+                sections: sections,
+                onJump: { section in
+                    showSections = false
+                    player?.jump(to: section.startTime)
+                },
+                onDelete: { section in
+                    onSectionsChanged?(sections.filter { $0.id != section.id })
+                },
+                onDismiss: { showSections = false }
+            )
         }
         .sheet(isPresented: $showTimeline) {
             ShotTimelineView(
@@ -232,6 +259,14 @@ struct AnalysisReviewView: View {
                     currentTime: player.currentTime,
                     markers: markers,
                     activeMarkerID: activeMarker?.id,
+                    markedSections: sections.map(\.range),
+                    editingRange: draftRange,
+                    onEditRange: { range, edge in
+                        draftRange = range
+                        // Follow the end being dragged, so the frame on screen is the one
+                        // the section will start or stop at.
+                        player.scrub(to: edge == .start ? range.lowerBound : range.upperBound)
+                    },
                     onScrubBegan: { player.beginScrubbing() },
                     onScrub: { player.scrub(to: $0) },
                     onScrubEnded: { player.endScrubbing() }
@@ -239,7 +274,13 @@ struct AnalysisReviewView: View {
 
                 transport(player)
 
-                if let attempt = activeAttempt {
+                if onSectionsChanged != nil {
+                    sectionBar(player)
+                }
+
+                // One job at a time: while marking, the ruling buttons would be a second
+                // set of commitments competing for the same corner of the screen.
+                if let attempt = activeAttempt, draftRange == nil {
                     ShotVerdictBar(attempt: attempt) { verdict in
                         gameState.setVerdict(verdict, for: attempt.id)
                     }
@@ -247,6 +288,7 @@ struct AnalysisReviewView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: activeMarker?.id)
+            .animation(.easeInOut(duration: 0.2), value: draftRange)
             .padding(.horizontal, 16)
             .padding(.top, 14)
             .padding(.bottom, 8)
@@ -264,7 +306,12 @@ struct AnalysisReviewView: View {
     /// The line above the bar: which shot you are on, or how many there are to find.
     private func shotReadout(_ player: AnalysisReviewPlayer) -> some View {
         HStack(spacing: 8) {
-            if let marker = activeMarker {
+            if draftRange != nil {
+                Image(systemName: "scissors")
+                    .foregroundStyle(.blue)
+                Text("Drag the handles to set the section")
+                    .foregroundStyle(.white)
+            } else if let marker = activeMarker {
                 Image(systemName: marker.symbol)
                     .foregroundStyle(marker.tint)
 
@@ -396,6 +443,101 @@ struct AnalysisReviewView: View {
 
     private static func rateLabel(_ rate: Float) -> String {
         rate == 1.0 ? "1×" : String(format: "%g×", rate)
+    }
+
+    // MARK: Marking a section
+
+    /// The row under the transport: start a mark, or commit the one in progress.
+    @ViewBuilder
+    private func sectionBar(_ player: AnalysisReviewPlayer) -> some View {
+        if let draftRange {
+            HStack(spacing: 8) {
+                Text("\(ShotScrubber.timecode(draftRange.lowerBound))–\(ShotScrubber.timecode(draftRange.upperBound))")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+
+                Text(ShotScrubber.length(draftRange.upperBound - draftRange.lowerBound))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.65))
+
+                Spacer(minLength: 8)
+
+                chip("Cancel", tint: .white.opacity(0.14)) { self.draftRange = nil }
+
+                chip("Mark for re-analysis", systemImage: "checkmark", tint: .blue) {
+                    save(draftRange, clipDuration: player.duration)
+                }
+            }
+        } else {
+            HStack(spacing: 10) {
+                chip("Mark section", systemImage: "scissors", tint: .white.opacity(0.14)) {
+                    beginMarking(player)
+                }
+
+                Spacer(minLength: 8)
+
+                if !sections.isEmpty {
+                    chip(
+                        "\(sections.count) marked · \(ShotScrubber.length(markedDuration))",
+                        systemImage: "rectangle.stack",
+                        tint: .blue.opacity(0.35)
+                    ) {
+                        player.pause()
+                        showSections = true
+                    }
+                }
+            }
+        }
+    }
+
+    private func chip(
+        _ title: String,
+        systemImage: String? = nil,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let systemImage { Image(systemName: systemImage) }
+                Text(title)
+            }
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(tint, in: Capsule())
+            .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Open a section around the current frame — or reopen the one it is already inside,
+    /// since extending a mark is far more likely than stacking a second on top of it.
+    private func beginMarking(_ player: AnalysisReviewPlayer) {
+        player.pause()
+
+        let time = player.currentTime
+
+        if let existing = sections.first(where: { $0.range.contains(time) }) {
+            draftRange = existing.range
+        } else {
+            draftRange = ReanalysisSection.normalised(
+                (time - Self.defaultSectionPadding)...(time + Self.defaultSectionPadding),
+                clipDuration: player.duration
+            )
+        }
+    }
+
+    private func save(_ range: ClosedRange<Double>, clipDuration: Double) {
+        onSectionsChanged?(sections.marking(range, clipDuration: clipDuration))
+        draftRange = nil
+    }
+
+    /// Half the length of a freshly opened section. Roughly a shot's run-up either side
+    /// of the frame you stopped on, which is usually about the right place to start.
+    private static let defaultSectionPadding: Double = 2
+
+    private var markedDuration: Double {
+        sections.reduce(0) { $0 + $1.duration }
     }
 
     // MARK: Shot navigation

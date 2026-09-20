@@ -47,6 +47,9 @@ struct VideoView: View {
     @State var existingRuns: [RunMetadata] = []
     @State var showExistingAnalysisAlert = false
 
+    /// Stretches of this video the user has flagged for another pass.
+    @State var plan: ReanalysisPlan?
+
     /// Shown the moment the last frame has been analysed. The processing view is a tuning
     /// instrument; this is what the result is actually for.
     @State var showAnalysisReview = false
@@ -359,6 +362,7 @@ struct VideoView: View {
 
                     let stored = store.loadTruth(for: assetIdentifier)
                     truth = stored
+                    plan = store.loadPlan(for: assetIdentifier)
                     processor.tracker.gameState.applyStoredTruth(stored.shots)
 
                     if let savedRim = stored.rim {
@@ -433,7 +437,11 @@ struct VideoView: View {
                     orientedVideoSize: videoProcessor.orientedVideoSize,
                     onDismiss: { showAnalysisReview = false },
                     frameProvider: frameProvider,
-                    ballStats: videoProcessor.tracker.ballDetector?.stats
+                    ballStats: videoProcessor.tracker.ballDetector?.stats,
+                    sections: plan?.sections ?? [],
+                    // No identifier means nowhere to write marks, so don't offer to take
+                    // them — a mark that silently evaporates is worse than none.
+                    onSectionsChanged: assetIdentifier == nil ? nil : { saveSections($0) }
                 )
             }
         }
@@ -512,6 +520,18 @@ struct VideoView: View {
         truth = document
         try? store.saveTruth(document)
         saveRun()
+    }
+
+    /// Persist the marked sections. Their own file, like the corrections: a request for
+    /// work still to do outlives any single analysis pass.
+    func saveSections(_ updated: [ReanalysisSection]) {
+        guard let assetIdentifier else { return }
+
+        var document = plan ?? ReanalysisPlan(assetIdentifier: assetIdentifier)
+        document.sections = updated
+
+        plan = document
+        try? store.savePlan(document)
     }
 
     func saveRim(_ geometry: HoopGeometry) {

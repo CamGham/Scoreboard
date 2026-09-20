@@ -119,6 +119,9 @@ struct SavedGameDetailView: View {
     @State private var runCount = 0
     @State private var showComparison = false
 
+    /// Sections marked for another pass, kept with the video rather than the run.
+    @State private var plan: ReanalysisPlan?
+
     /// The scrubber view over the original clip. Only offered once the video itself has
     /// been resolved — there is nothing to scrub without it.
     @State private var showReview = false
@@ -180,7 +183,9 @@ struct SavedGameDetailView: View {
                     orientedVideoSize: orientedVideoSize,
                     onDismiss: { showReview = false },
                     frameProvider: frameProvider,
-                    ballStats: run?.ballStats
+                    ballStats: run?.ballStats,
+                    sections: plan?.sections ?? [],
+                    onSectionsChanged: { saveSections($0) }
                 )
             }
         }
@@ -200,6 +205,7 @@ struct SavedGameDetailView: View {
         let loaded = store.load(for: summary.assetIdentifier)
         run = loaded.run
         truth = loaded.truth
+        plan = store.loadPlan(for: summary.assetIdentifier)
         runCount = store.runs(for: summary.assetIdentifier).count
 
         if let run = loaded.run {
@@ -231,6 +237,14 @@ struct SavedGameDetailView: View {
         } catch {
             videoFailure = .assetMissing
         }
+    }
+
+    private func saveSections(_ updated: [ReanalysisSection]) {
+        var document = plan ?? ReanalysisPlan(assetIdentifier: summary.assetIdentifier)
+        document.sections = updated
+
+        plan = document
+        try? store.savePlan(document)
     }
 
     private func orientation(from transform: CGAffineTransform) -> CGImagePropertyOrientation {
