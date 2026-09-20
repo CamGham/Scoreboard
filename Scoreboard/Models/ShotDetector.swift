@@ -10,7 +10,7 @@ import Foundation
 // MARK: - Results
 
 /// Where and when the ball passed down through the rim plane.
-struct RimCrossing: Equatable {
+struct RimCrossing: Codable, Equatable {
     /// Absolute frame, carrying sub-frame precision from interpolation.
     let frame: Double
 
@@ -30,7 +30,7 @@ struct RimCrossing: Equatable {
     let timeSeconds: Double?
 }
 
-struct ShotAttempt: Identifiable, Equatable {
+struct ShotAttempt: Codable, Identifiable, Equatable {
 
     /// What the user says actually happened, when they disagree with the detector or
     /// resolve something it couldn't.
@@ -39,7 +39,7 @@ struct ShotAttempt: Identifiable, Equatable {
     /// detector's call is what you are measuring, the user's is the ground truth you are
     /// measuring it against. Overwriting would destroy the comparison the moment it
     /// became useful.
-    enum UserVerdict: String, CaseIterable {
+    enum UserVerdict: String, Codable, CaseIterable {
         case made
         case missed
         /// Not a shot at all — a pass, a rebound, a detector artefact.
@@ -62,7 +62,7 @@ struct ShotAttempt: Identifiable, Equatable {
         }
     }
 
-    enum Result: String {
+    enum Result: String, Codable {
         case inProgress
         case made
         case missed
@@ -172,7 +172,7 @@ enum ShotEvent {
 
 // MARK: - Tuning
 
-struct ShotDetectorConfig {
+struct ShotDetectorConfig: Codable, Equatable {
     /// Observations kept for fitting the live arc.
     var fitWindow: Int = 24
 
@@ -218,6 +218,41 @@ struct ShotDetectorConfig {
     var requireBallisticCrossing: Bool = true
 
     init() {}
+
+    // Decoded leniently: any key absent falls back to today's default.
+    //
+    // Swift's synthesised decoder demands every key, so adding a setting would make
+    // every previously saved run unreadable — and a stored run is the baseline you are
+    // trying to compare against. Property defaults are not used as fallbacks unless the
+    // decoding is written out like this.
+    private enum CodingKeys: String, CodingKey {
+        case fitWindow, predictionHorizon, launchApexMarginInRadii
+        case rimZoneHeightInRadii, rimZoneWidthInRimRadii, makeBallClearance
+        case missConfirmDepthInRadii, missConfirmFrames, cooldownFrames
+        case attemptTimeoutFrames, maxTrackingGapFrames, requireBallisticCrossing
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = ShotDetectorConfig()
+
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)) .flatMap { $0 } ?? fallback
+        }
+
+        fitWindow = value(.fitWindow, defaults.fitWindow)
+        predictionHorizon = value(.predictionHorizon, defaults.predictionHorizon)
+        launchApexMarginInRadii = value(.launchApexMarginInRadii, defaults.launchApexMarginInRadii)
+        rimZoneHeightInRadii = value(.rimZoneHeightInRadii, defaults.rimZoneHeightInRadii)
+        rimZoneWidthInRimRadii = value(.rimZoneWidthInRimRadii, defaults.rimZoneWidthInRimRadii)
+        makeBallClearance = value(.makeBallClearance, defaults.makeBallClearance)
+        missConfirmDepthInRadii = value(.missConfirmDepthInRadii, defaults.missConfirmDepthInRadii)
+        missConfirmFrames = value(.missConfirmFrames, defaults.missConfirmFrames)
+        cooldownFrames = value(.cooldownFrames, defaults.cooldownFrames)
+        attemptTimeoutFrames = value(.attemptTimeoutFrames, defaults.attemptTimeoutFrames)
+        maxTrackingGapFrames = value(.maxTrackingGapFrames, defaults.maxTrackingGapFrames)
+        requireBallisticCrossing = value(.requireBallisticCrossing, defaults.requireBallisticCrossing)
+    }
 }
 
 // MARK: - Detector

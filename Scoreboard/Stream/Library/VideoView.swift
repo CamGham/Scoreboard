@@ -19,6 +19,7 @@ struct VideoView: View {
     @Environment(\.dismiss) var dismiss
     
     @State var asset: AVURLAsset?
+    @State var assetIdentifier: String?
     @State var videoProcessor: VideoProcessor?
     
     @State var showLibrary = false
@@ -34,6 +35,17 @@ struct VideoView: View {
     /// Decodes the one frame each shot card is drawn on. Built once per asset, since it
     /// caches decoded frames across the whole timeline.
     @State var frameProvider: ShotFrameProvider?
+
+    /// Saved analysis and corrections for this video.
+    @State var store = ShotStore()
+    @State var truth: GroundTruthDocument?
+
+    /// Identity of the analysis pass in progress, so repeated saves update one run.
+    @State var currentRunID: UUID?
+
+    /// Runs already stored for this video, checked before analysing again.
+    @State var existingRuns: [RunMetadata] = []
+    @State var showExistingAnalysisAlert = false
     var body: some View {
         VStack {
             switch assetState {
@@ -312,7 +324,12 @@ struct VideoView: View {
             .padding(4)
         })
         .sheet(isPresented: $showLibrary) {
-            VideoPicker(isPresented: $showLibrary, selectedAsset: $asset, assetState: $assetState)
+            VideoPicker(
+                isPresented: $showLibrary,
+                selectedAsset: $asset,
+                assetIdentifier: $assetIdentifier,
+                assetState: $assetState
+            )
         }
         .onAppear(perform: {
             showLibrary = true
@@ -325,6 +342,30 @@ struct VideoView: View {
                 videoProcessor = processor
                 frameProvider = ShotFrameProvider(asset: asset)
 
+                // Load anything the user has already told us about this video. A saved
+                // rim means they never have to place it twice, and saved rulings are
+                // reapplied to attempts as they are detected.
+                if let assetIdentifier {
+                    // Analysing again adds a run rather than replacing the last one, so
+                    // say so before it happens.
+                    existingRuns = store.runs(for: assetIdentifier)
+                    if !existingRuns.isEmpty {
+                        showExistingAnalysisAlert = true
+                    }
+
+                    let stored = store.loadTruth(for: assetIdentifier)
+                    truth = stored
+                    processor.tracker.gameState.applyStoredTruth(stored.shots)
+
+                    if let savedRim = stored.rim {
+                        processor.tracker.setUserRim(savedRim)
+                    }
+
+                    processor.tracker.gameState.onVerdictChanged = { [assetIdentifier] attempt in
+                        recordVerdict(for: attempt, assetIdentifier: assetIdentifier)
+                    }
+                }
+
                 // Resolve the rim across the whole clip before a single frame is
                 // processed. Sampling spread-out frames beats the opening seconds: a rim
                 // screened by players at the start usually isn't later on, and the rim
@@ -333,7 +374,9 @@ struct VideoView: View {
                     let result = await RimPreflight.scan(asset: asset, model: model)
                     rimPreflight = result
 
-                    if let geometry = result.geometry {
+                    if truth?.rim != nil {
+                        // A hand-placed rim outranks anything the pre-flight found.
+                    } else if let geometry = result.geometry {
                         processor.tracker.seedRim(geometry)
                     } else {
                         // Nothing found anywhere in the clip — ask rather than let the
@@ -348,6 +391,12 @@ struct VideoView: View {
                 print("error \(error.localizedDescription)")
             }
         }
+        .alert("Already analysed", isPresented: $showExistingAnalysisAlert) {
+            Button("Analyse again") { }
+            Button("Cancel", role: .cancel) { dismiss() }
+        } message: {
+            Text(existingAnalysisMessage)
+        }
         .sheet(isPresented: $showRimPlacement) {
             if let videoProcessor, let frame = videoProcessor.currentFrame {
                 RimPlacementView(
@@ -356,11 +405,16 @@ struct VideoView: View {
                     onCancel: { showRimPlacement = false },
                     onConfirm: { geometry in
                         videoProcessor.tracker.setUserRim(geometry)
+                        saveRim(geometry)
                         showRimPlacement = false
                     }
                 )
             }
         }
+        .onChange(of: showHistory) { _, isShowing in
+            if isShowing { saveRun() }
+        }
+        .onDisappear { saveRun() }
         .sheet(isPresented: $showHistory) {
             if let videoProcessor {
                 ShotTimelineView(
@@ -377,6 +431,74 @@ struct VideoView: View {
     /// Normalized Vision point (origin bottom-left, y up) to SwiftUI view point.
     func normalizedToView(_ point: CGPoint, viewSize: CGSize) -> CGPoint {
         CGPoint(x: point.x * viewSize.width, y: (1 - point.y) * viewSize.height)
+    }
+
+    var existingAnalysisMessage: String {
+        let count = existingRuns.count
+        let passes = count == 1 ? "once" : "\(count) times"
+
+        guard let latest = existingRuns.first else {
+            return "This video has been analysed before."
+        }
+
+        let when = latest.analysedAt.formatted(.dateTime.day().month().hour().minute())
+        return "This video has been analysed \(passes), most recently on \(when) "
+            + "(\(latest.makes)/\(latest.attempts)). Analysing again keeps the earlier "
+            + "results and your corrections."
+    }
+
+    /// Persist this pass of the detector, with the settings that produced it — accuracy
+    /// numbers are meaningless without knowing which configuration they came from.
+    func saveRun() {
+        guard let assetIdentifier, let videoProcessor else { return }
+
+        let gameState = videoProcessor.tracker.gameState
+        let attempts = gameState.reviewableAttempts
+        guard !attempts.isEmpty else { return }
+
+        // One run id per analysis pass, so repeated saves during a session update the
+        // same run rather than piling up near-identical copies.
+        let id = currentRunID ?? UUID()
+        currentRunID = id
+
+        let run = AnalysisRun(
+            id: id,
+            assetIdentifier: assetIdentifier,
+            configuration: videoProcessor.tracker.currentConfiguration(),
+            attempts: attempts,
+            ballStats: videoProcessor.tracker.ballDetector?.stats
+        )
+
+        try? store.saveRun(run)
+
+        // The library list reads summaries rather than parsing every run.
+        try? store.refreshSummary(for: assetIdentifier, attempts: attempts)
+    }
+
+    /// Persist a ruling as time-keyed ground truth, so it survives re-analysis.
+    func recordVerdict(for attempt: ShotAttempt, assetIdentifier: String) {
+        guard let time = attempt.keyTime else { return }
+
+        var document = truth ?? GroundTruthDocument(assetIdentifier: assetIdentifier)
+        document.shots = GroundTruthMatcher.record(
+            verdict: attempt.userVerdict,
+            atTime: time,
+            into: document.shots
+        )
+
+        truth = document
+        try? store.saveTruth(document)
+        saveRun()
+    }
+
+    func saveRim(_ geometry: HoopGeometry) {
+        guard let assetIdentifier else { return }
+
+        var document = truth ?? GroundTruthDocument(assetIdentifier: assetIdentifier)
+        document.rim = geometry
+
+        truth = document
+        try? store.saveTruth(document)
     }
 
     func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {

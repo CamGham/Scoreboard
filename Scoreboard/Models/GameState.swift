@@ -123,7 +123,10 @@ final class GameState {
         case .attemptStarted, .rimContact:
             break
 
-        case .attemptResolved(let attempt):
+        case .attemptResolved(let resolved):
+            // Reapply anything the user already ruled on this moment of the clip.
+            let attempt = GroundTruthMatcher.apply(storedTruth, to: [resolved]).first ?? resolved
+
             switch attempt.result {
             case .made:
                 shotTimeline.append(attempt)
@@ -147,15 +150,48 @@ final class GameState {
         reviewableAttempts.first { $0.id == id }
     }
 
+    /// Called after a ruling changes, so it can be written to disk.
+    var onVerdictChanged: ((ShotAttempt) -> Void)?
+
+    /// Rulings loaded from disk, applied to attempts as they are detected.
+    ///
+    /// Matched by time rather than id, because these were recorded against a previous
+    /// run whose attempt ids no longer exist.
+    var storedTruth: [GroundTruthEntry] = []
+
     /// Record — or clear, with nil — the user's ruling on a shot.
     func setVerdict(_ verdict: ShotAttempt.UserVerdict?, for id: UUID) {
         if let index = shotTimeline.firstIndex(where: { $0.id == id }) {
             shotTimeline[index].userVerdict = verdict
+            onVerdictChanged?(shotTimeline[index])
             return
         }
         if let index = abandonedAttempts.firstIndex(where: { $0.id == id }) {
             abandonedAttempts[index].userVerdict = verdict
+            onVerdictChanged?(abandonedAttempts[index])
         }
+    }
+
+    /// Reapply stored rulings to the attempts detected so far, matching by time.
+    func applyStoredTruth(_ truth: [GroundTruthEntry]) {
+        storedTruth = truth
+        shotTimeline = GroundTruthMatcher.apply(truth, to: shotTimeline)
+        abandonedAttempts = GroundTruthMatcher.apply(truth, to: abandonedAttempts)
+    }
+
+    /// Populate from a saved run, reapplying the user's stored rulings.
+    ///
+    /// Attempts are sorted back into resolved and abandoned the same way live events
+    /// would have, so every view that works on a live game works on a saved one.
+    func load(run: AnalysisRun, truth: GroundTruthDocument) {
+        reset()
+
+        storedTruth = truth.shots
+        let matched = GroundTruthMatcher.apply(truth.shots, to: run.attempts)
+
+        shotTimeline = matched.filter { $0.result == .made || $0.result == .missed }
+        abandonedAttempts = matched.filter { $0.result == .abandoned }
+        lastMadeFrame = shotTimeline.last(where: { $0.result == .made })?.endFrame
     }
 
     func reset() {

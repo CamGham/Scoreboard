@@ -137,6 +137,24 @@ class VisionTracker {
         }
     }
 
+    /// How this tracker is currently configured, for recording with an analysis run.
+    ///
+    /// Assembled from the live objects rather than from defaults, so the record reflects
+    /// what actually ran.
+    func currentConfiguration() -> RunConfiguration {
+        RunConfiguration(
+            shotDetector: ShotDetectorConfig(),
+            ballROI: ballDetector?.config ?? BallROIPredictor.Config(),
+            fullFrameBallConfidence: Double(ballDetector?.fullFrameConfidence ?? 0.45),
+            croppedBallConfidence: Double(ballDetector?.croppedConfidence ?? 0.25),
+            modelIdentifier: ObjectDetector.modelIdentifier,
+            rimSource: {
+                guard shotTracker.rim != nil else { return .none }
+                return shotTracker.isRimUserPlaced ? .userPlaced : .detected
+            }()
+        )
+    }
+
     /// Pin the rim to a geometry the user placed by hand.
     func setUserRim(_ geometry: HoopGeometry) {
         shotTracker.setUserRim(geometry)

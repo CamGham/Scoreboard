@@ -8,7 +8,7 @@
 import Foundation
 
 /// One sighting of the ball, in Vision normalized image space (origin bottom-left, y up).
-struct BallObservation: Equatable {
+struct BallObservation: Codable, Equatable {
     let frameID: Int
     /// Centre of the ball — not a bounding-box corner.
     let center: CGPoint
