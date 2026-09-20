@@ -8,6 +8,8 @@
 import SwiftUI
 
 struct ScoreboardView: View {
+    private let store = ShotStore()
+
     var body: some View {
         NavigationStack {
             
@@ -26,19 +28,8 @@ struct ScoreboardView: View {
                     }
                     
                     
-                    ForEach(0..<10) { i in
-                        RoundedRectangle(cornerRadius: 25)
-                            .fill(.regularMaterial)
-                            .frame(height: 80)
-                        //                                .animated.threshold(.visible(0.9))
-                            .scrollTransition { content, phase in
-                                content
-                                    .opacity(phase.isIdentity ? 1 : 0)
-                                    .scaleEffect(phase.isIdentity ? 1 : 0.75)
-                                    .blur(radius: phase.isIdentity ? 0 : 10)
-                            }
-                            .padding(.horizontal)
-                    }
+                    SavedGamesView(store: store)
+                        .padding(.horizontal)
                 }
             }
             .navigationTitle("Scoreboard")

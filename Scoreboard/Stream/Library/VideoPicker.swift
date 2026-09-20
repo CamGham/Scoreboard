@@ -13,6 +13,14 @@ import SwiftUI
 struct VideoPicker: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
     @Binding var selectedAsset: AVURLAsset?
+
+    /// Stable photo-library identity for the picked video.
+    ///
+    /// The file below is copied to a fresh temp URL on every pick, so the URL says
+    /// nothing about *which* video this is. Saved analysis has to key off something that
+    /// means the same thing next time, and this is it.
+    @Binding var assetIdentifier: String?
+
     @Binding var assetState: AssetState
     
     func makeUIViewController(context: Context) -> PHPickerViewController {
@@ -46,7 +54,10 @@ struct VideoPicker: UIViewControllerRepresentable {
                 return
             }
             parent.assetState = .loading
-            
+
+            // Populated because the configuration is backed by the shared photo library.
+            parent.assetIdentifier = selectedItem.assetIdentifier
+
             let itemProvider = selectedItem.itemProvider
             guard itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) else {
                 parent.assetState = .failed

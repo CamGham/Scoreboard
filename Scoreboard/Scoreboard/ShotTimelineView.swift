@@ -81,117 +81,144 @@ struct ShotTimelineView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    LabeledContent("Attempts", value: "\(gameState.stats.attempts)")
-                    LabeledContent("Made", value: "\(gameState.stats.makes)")
-                    LabeledContent("Missed", value: "\(gameState.stats.misses)")
-                    LabeledContent(
-                        "Field goal",
-                        value: String(format: "%.0f%%", gameState.stats.fieldGoalPercentage)
-                    )
-                    LabeledContent("Points", value: "\(gameState.stats.points)")
-                } header: {
-                    Text("Totals")
-                } footer: {
-                    Text("Every make counts as two. Separating twos from threes needs court calibration, which isn't wired up yet.")
-                }
-
+                totalsSection
+                
                 if gameState.accuracy.reviewed > 0 {
-                    let accuracy = gameState.accuracy
-                    Section {
-                        LabeledContent("Shots reviewed", value: "\(accuracy.reviewed)")
-                        LabeledContent(
-                            "Detector agreed",
-                            value: String(format: "%d (%.0f%%)", accuracy.agreed, accuracy.agreementRate)
-                        )
-                        LabeledContent("Wrong call", value: "\(accuracy.wrongCalls)")
-                        LabeledContent("Not a shot", value: "\(accuracy.falsePositives)")
-                    } header: {
-                        Text("Detector accuracy")
-                    } footer: {
-                        Text("Measured against your corrections. Every shot you rule on is a labelled example, so this becomes more meaningful the more you review.")
-                    }
+                    detectorAccuracySection
                 }
-
-                if let stats = ballStats {
-                    Section {
-                        LabeledContent("Frames", value: "\(stats.framesProcessed)")
-                        LabeledContent(
-                            "Ball found",
-                            value: String(format: "%.0f%% of frames", stats.overallHitRate * 100)
-                        )
-                        LabeledContent(
-                            "In crop",
-                            value: String(format: "%.0f%% of %d", stats.croppedHitRate * 100, stats.croppedAttempts)
-                        )
-                        LabeledContent(
-                            "Full frame",
-                            value: String(format: "%.0f%% of %d", stats.fullFrameHitRate * 100, stats.fullFrameAttempts)
-                        )
-                        LabeledContent(
-                            "Mean confidence",
-                            value: String(format: "%.2f", stats.meanConfidence)
-                        )
-                    } header: {
-                        Text("Ball detection")
-                    } footer: {
-                        Text("Compare the crop's hit rate against the full-frame sweep. A trajectory fit needs consecutive sightings, so the share of frames with a ball matters more than confidence.")
-                    }
+                
+                if ballStats != nil {
+                    ballDetectionSection
                 }
-
-                Section("Shots") {
-                    if gameState.shotTimeline.isEmpty {
-                        Text("No shots detected yet")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ForEach(gameState.shotTimeline.reversed()) { attempt in
-                        ShotCardView(attempt: attempt, provider: frameProvider)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                // Only seekable shots can be replayed.
-                                if asset != nil, attempt.keyTime != nil {
-                                    replaying = attempt
-                                }
-                            }
-                    }
-                }
-
+                
+                shotsSection
+                
                 if !gameState.abandonedAttempts.isEmpty {
-                    Section {
-                        ForEach(gameState.abandonedAttempts.reversed()) { attempt in
-                            ShotCardView(attempt: attempt, provider: frameProvider)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    if asset != nil, attempt.keyTime != nil {
-                                        replaying = attempt
-                                    }
-                                }
-                        }
-                    } header: {
-                        Text("Unresolved")
-                    } footer: {
-                        Text("Opened as a shot but the ball was lost before an outcome could be read. These are excluded from the totals.")
-                    }
+                    unresolvedSection
                 }
             }
             .navigationTitle("Shot timeline")
             .navigationBarTitleDisplayMode(.inline)
-            .fullScreenCover(item: $replaying) { attempt in
-                if let asset {
-                    // Re-read from game state rather than using the captured copy, so a
-                    // ruling made in the sheet is reflected in the sheet.
-                    let live = gameState.attempt(withID: attempt.id) ?? attempt
+        }
+        .fullScreenCover(item: $replaying) { attempt in
+            if let asset {
+                // Re-read from game state rather than using the captured copy, so a
+                // ruling made in the sheet is reflected in the sheet.
+                let live = gameState.attempt(withID: attempt.id) ?? attempt
 
-                    ShotReplayView(
-                        attempt: live,
-                        asset: asset,
-                        orientedVideoSize: orientedVideoSize,
-                        onDismiss: { replaying = nil },
-                        onVerdict: { gameState.setVerdict($0, for: attempt.id) }
-                    )
-                }
+                ShotReplayView(
+                    attempt: live,
+                    asset: asset,
+                    orientedVideoSize: orientedVideoSize,
+                    onDismiss: { replaying = nil },
+                    onVerdict: { gameState.setVerdict($0, for: attempt.id) }
+                )
             }
+        }
+        .onChange(of: replaying) { old, new in
+            print("\(new?.id.uuidString ?? "UNknown")")
+        }
+    }
+    
+    // MARK: - Section Views
+    
+    private var totalsSection: some View {
+        Section {
+            LabeledContent("Attempts", value: "\(gameState.stats.attempts)")
+            LabeledContent("Made", value: "\(gameState.stats.makes)")
+            LabeledContent("Missed", value: "\(gameState.stats.misses)")
+            LabeledContent(
+                "Field goal",
+                value: String(format: "%.0f%%", gameState.stats.fieldGoalPercentage)
+            )
+            LabeledContent("Points", value: "\(gameState.stats.points)")
+        } header: {
+            Text("Totals")
+        } footer: {
+            Text("Every make counts as two. Separating twos from threes needs court calibration, which isn't wired up yet.")
+        }
+    }
+    
+    private var detectorAccuracySection: some View {
+        Section {
+            let accuracy = gameState.accuracy
+            LabeledContent("Shots reviewed", value: "\(accuracy.reviewed)")
+            LabeledContent(
+                "Detector agreed",
+                value: String(format: "%d (%.0f%%)", accuracy.agreed, accuracy.agreementRate)
+            )
+            LabeledContent("Wrong call", value: "\(accuracy.wrongCalls)")
+            LabeledContent("Not a shot", value: "\(accuracy.falsePositives)")
+        } header: {
+            Text("Detector accuracy")
+        } footer: {
+            Text("Measured against your corrections. Every shot you rule on is a labelled example, so this becomes more meaningful the more you review.")
+        }
+    }
+    
+    private var ballDetectionSection: some View {
+        Section {
+            if let stats = ballStats {
+                LabeledContent("Frames", value: "\(stats.framesProcessed)")
+                LabeledContent(
+                    "Ball found",
+                    value: String(format: "%.0f%% of frames", stats.overallHitRate * 100)
+                )
+                LabeledContent(
+                    "In crop",
+                    value: String(format: "%.0f%% of %d", stats.croppedHitRate * 100, stats.croppedAttempts)
+                )
+                LabeledContent(
+                    "Full frame",
+                    value: String(format: "%.0f%% of %d", stats.fullFrameHitRate * 100, stats.fullFrameAttempts)
+                )
+                LabeledContent(
+                    "Mean confidence",
+                    value: String(format: "%.2f", stats.meanConfidence)
+                )
+            }
+        } header: {
+            Text("Ball detection")
+        } footer: {
+            Text("Compare the crop's hit rate against the full-frame sweep. A trajectory fit needs consecutive sightings, so the share of frames with a ball matters more than confidence.")
+        }
+    }
+    
+    private var shotsSection: some View {
+        Section("Shots") {
+            if gameState.shotTimeline.isEmpty {
+                Text("No shots detected yet")
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(gameState.shotTimeline.reversed()) { attempt in
+                ShotCardView(attempt: attempt, provider: frameProvider)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // Only seekable shots can be replayed.
+                        if asset != nil, attempt.keyTime != nil {
+                            replaying = attempt
+                        }
+                    }
+            }
+        }
+    }
+    
+    private var unresolvedSection: some View {
+        Section {
+            ForEach(gameState.abandonedAttempts.reversed()) { attempt in
+                ShotCardView(attempt: attempt, provider: frameProvider)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if asset != nil, attempt.keyTime != nil {
+                            replaying = attempt
+                        }
+                    }
+            }
+        } header: {
+            Text("Unresolved")
+        } footer: {
+            Text("Opened as a shot but the ball was lost before an outcome could be read. These are excluded from the totals.")
         }
     }
 }

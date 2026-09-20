@@ -10,7 +10,7 @@ import Foundation
 // MARK: - Results
 
 /// Where and when the ball passed down through the rim plane.
-struct RimCrossing: Equatable {
+struct RimCrossing: Codable, Equatable {
     /// Absolute frame, carrying sub-frame precision from interpolation.
     let frame: Double
 
@@ -30,7 +30,7 @@ struct RimCrossing: Equatable {
     let timeSeconds: Double?
 }
 
-struct ShotAttempt: Identifiable, Equatable {
+struct ShotAttempt: Codable, Identifiable, Equatable {
 
     /// What the user says actually happened, when they disagree with the detector or
     /// resolve something it couldn't.
@@ -39,7 +39,7 @@ struct ShotAttempt: Identifiable, Equatable {
     /// detector's call is what you are measuring, the user's is the ground truth you are
     /// measuring it against. Overwriting would destroy the comparison the moment it
     /// became useful.
-    enum UserVerdict: String, CaseIterable {
+    enum UserVerdict: String, Codable, CaseIterable {
         case made
         case missed
         /// Not a shot at all — a pass, a rebound, a detector artefact.
@@ -62,7 +62,7 @@ struct ShotAttempt: Identifiable, Equatable {
         }
     }
 
-    enum Result: String {
+    enum Result: String, Codable {
         case inProgress
         case made
         case missed
@@ -172,7 +172,7 @@ enum ShotEvent {
 
 // MARK: - Tuning
 
-struct ShotDetectorConfig {
+struct ShotDetectorConfig: Codable, Equatable {
     /// Observations kept for fitting the live arc.
     var fitWindow: Int = 24
 

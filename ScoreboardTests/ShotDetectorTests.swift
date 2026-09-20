@@ -1244,3 +1244,387 @@ struct CorrectionTests {
         #expect(state.stats.makes == 1)
     }
 }
+
+// MARK: - Persistence
+
+struct GroundTruthMatcherTests {
+
+    private func attempt(at time: Double?, result: ShotAttempt.Result = .missed) -> ShotAttempt {
+        let trajectory: [BallObservation] = time.map { t in
+            [BallObservation(frameID: 0, center: CGPoint(x: 0.5, y: 0.5),
+                             radius: 0.02, confidence: 0.9, timeSeconds: t)]
+        } ?? []
+
+        return ShotAttempt(
+            id: UUID(), startFrame: 0, endFrame: 1, result: result,
+            trajectory: trajectory, crossings: [], rimContacts: 0,
+            apexY: nil, wasDetectedLate: false, rim: nil, userVerdict: nil
+        )
+    }
+
+    @Test("Rulings survive re-analysis by matching on time, not id")
+    func rulingsSurviveReanalysis() throws {
+        let truth = [GroundTruthEntry(timeSeconds: 12.0, verdict: .made)]
+
+        // A fresh run: brand new attempt id, very slightly different timing.
+        let reanalysed = [attempt(at: 12.08, result: .missed)]
+        let matched = GroundTruthMatcher.apply(truth, to: reanalysed)
+
+        #expect(matched.first?.userVerdict == .made)
+        #expect(matched.first?.effectiveResult == .made)
+        #expect(matched.first?.isCorrected == true)
+    }
+
+    @Test("A ruling doesn't leak onto a different shot")
+    func doesNotMatchDistantShots() {
+        let truth = [GroundTruthEntry(timeSeconds: 12.0, verdict: .made)]
+        let matched = GroundTruthMatcher.apply(truth, to: [attempt(at: 30.0)])
+
+        #expect(matched.first?.userVerdict == nil)
+    }
+
+    @Test("Two nearby shots can't both claim one ruling")
+    func rulingIsClaimedOnce() {
+        let truth = [GroundTruthEntry(timeSeconds: 12.0, verdict: .made)]
+
+        // Both fall inside the tolerance; only the nearer should take it.
+        let matched = GroundTruthMatcher.apply(
+            truth,
+            to: [attempt(at: 12.9), attempt(at: 12.05)]
+        )
+
+        #expect(matched[0].userVerdict == nil)
+        #expect(matched[1].userVerdict == .made)
+    }
+
+    @Test("Attempts with no timestamp are left alone")
+    func untimedAttemptsSkipped() {
+        let truth = [GroundTruthEntry(timeSeconds: 12.0, verdict: .made)]
+        let matched = GroundTruthMatcher.apply(truth, to: [attempt(at: nil)])
+        #expect(matched.first?.userVerdict == nil)
+    }
+
+    @Test("Recording a ruling replaces any earlier one at that moment")
+    func recordingReplacesInPlace() {
+        var truth: [GroundTruthEntry] = []
+
+        truth = GroundTruthMatcher.record(verdict: .made, atTime: 12.0, into: truth)
+        #expect(truth.count == 1)
+
+        // Changing their mind about the same shot must not leave two entries behind.
+        truth = GroundTruthMatcher.record(verdict: .missed, atTime: 12.1, into: truth)
+        #expect(truth.count == 1)
+        #expect(truth.first?.verdict == .missed)
+
+        truth = GroundTruthMatcher.record(verdict: .made, atTime: 40.0, into: truth)
+        #expect(truth.count == 2)
+        // Kept in time order, so the file reads sensibly.
+        #expect(truth[0].timeSeconds < truth[1].timeSeconds)
+    }
+
+    @Test("Clearing a ruling removes it from the record")
+    func clearingRemovesEntry() {
+        var truth = GroundTruthMatcher.record(verdict: .made, atTime: 12.0, into: [])
+        truth = GroundTruthMatcher.record(verdict: nil, atTime: 12.0, into: truth)
+        #expect(truth.isEmpty)
+    }
+
+    @Test("Scoring a run counts shots it failed to find at all")
+    func scoringCountsMissedShots() {
+        let truth = [
+            GroundTruthEntry(timeSeconds: 10.0, verdict: .made),
+            GroundTruthEntry(timeSeconds: 20.0, verdict: .made),
+            GroundTruthEntry(timeSeconds: 30.0, verdict: .missed)
+        ]
+
+        // This run only found the first shot, and got it right.
+        let score = GroundTruthMatcher.score(run: [attempt(at: 10.0, result: .made)], against: truth)
+
+        #expect(score.reviewed == 1)
+        #expect(score.agreed == 1)
+        // Without this, a detector that quietly stopped finding shots would score 100%.
+        #expect(score.missedShots == 2)
+    }
+
+    @Test("Scoring separates wrong calls from invented shots")
+    func scoringSeparatesErrorKinds() {
+        let truth = [
+            GroundTruthEntry(timeSeconds: 10.0, verdict: .missed),
+            GroundTruthEntry(timeSeconds: 20.0, verdict: .notAShot)
+        ]
+
+        let score = GroundTruthMatcher.score(
+            run: [attempt(at: 10.0, result: .made), attempt(at: 20.0, result: .made)],
+            against: truth
+        )
+
+        #expect(score.wrongCalls == 1)
+        #expect(score.falsePositives == 1)
+        #expect(score.agreed == 0)
+    }
+}
+
+struct ShotStoreTests {
+
+    private func makeStore() -> (ShotStore, URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "ShotStoreTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        return (ShotStore(root: root), root)
+    }
+
+    @Test("Ground truth round-trips through disk")
+    func truthRoundTrips() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var document = GroundTruthDocument(assetIdentifier: "ABC/123")
+        document.rim = HoopGeometry(
+            center: CGPoint(x: 0.5, y: 0.7), verticalRadius: 0.012, horizontalRadius: 0.045
+        )
+        document.shots = [GroundTruthEntry(timeSeconds: 12.5, verdict: .made)]
+
+        try store.saveTruth(document)
+        let loaded = store.loadTruth(for: "ABC/123")
+
+        // The identifier contains a slash — it must not have been read as a path.
+        #expect(loaded.rim == document.rim)
+        #expect(loaded.shots.count == 1)
+        #expect(loaded.shots.first?.verdict == .made)
+        #expect(abs((loaded.shots.first?.timeSeconds ?? 0) - 12.5) < 1e-9)
+    }
+
+    @Test("An unknown video loads as empty rather than failing")
+    func missingTruthIsEmpty() {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let loaded = store.loadTruth(for: "never-seen")
+        #expect(loaded.shots.isEmpty)
+        #expect(loaded.rim == nil)
+    }
+
+    @Test("Re-analysing replaces the run but keeps the corrections")
+    func reanalysisKeepsCorrections() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let id = "video-1"
+
+        try store.saveTruth(GroundTruthDocument(
+            assetIdentifier: id,
+            shots: [GroundTruthEntry(timeSeconds: 12.0, verdict: .made)]
+        ))
+
+        func run(resultAt time: Double, result: ShotAttempt.Result) -> AnalysisRun {
+            AnalysisRun(
+                assetIdentifier: id,
+                detectorConfig: ShotDetectorConfig(),
+                attempts: [ShotAttempt(
+                    id: UUID(), startFrame: 0, endFrame: 1, result: result,
+                    trajectory: [BallObservation(
+                        frameID: 0, center: CGPoint(x: 0.5, y: 0.5),
+                        radius: 0.02, confidence: 0.9, timeSeconds: time
+                    )],
+                    crossings: [], rimContacts: 0, apexY: nil,
+                    wasDetectedLate: false, rim: nil, userVerdict: nil
+                )]
+            )
+        }
+
+        try store.saveRun(run(resultAt: 12.0, result: .missed))
+        let first = store.load(for: id)
+        #expect(first.run?.attempts.first?.userVerdict == .made)
+
+        // A second pass with different settings mints a new attempt id and shifts timing.
+        try store.saveRun(run(resultAt: 12.15, result: .made))
+        let second = store.load(for: id)
+
+        // The ruling is still attached — which is the entire reason truth is stored
+        // separately and keyed by time.
+        #expect(second.run?.attempts.first?.userVerdict == .made)
+        #expect(second.run?.attempts.first?.isCorrected == false)
+        #expect(store.loadTruth(for: id).shots.count == 1)
+    }
+
+    @Test("A corrupt file is treated as absent, not fatal")
+    func corruptFileIsIgnored() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try store.saveTruth(GroundTruthDocument(
+            assetIdentifier: "v", shots: [GroundTruthEntry(timeSeconds: 1, verdict: .made)]
+        ))
+
+        // Simulate a partial write or a file from an incompatible build.
+        let directory = root.appending(path: "v".addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics)!, directoryHint: .isDirectory)
+        try Data("{ not json".utf8).write(to: directory.appending(path: "truth.json"))
+
+        let loaded = store.loadTruth(for: "v")
+        #expect(loaded.shots.isEmpty)
+    }
+
+    @Test("Deleting removes everything stored for a video")
+    func deleteRemovesAll() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try store.saveTruth(GroundTruthDocument(
+            assetIdentifier: "v", shots: [GroundTruthEntry(timeSeconds: 1, verdict: .made)]
+        ))
+        #expect(store.storedAssetIdentifiers().contains("v"))
+
+        try store.delete(assetIdentifier: "v")
+
+        #expect(store.loadTruth(for: "v").shots.isEmpty)
+        #expect(store.storedAssetIdentifiers().contains("v") == false)
+    }
+}
+
+// MARK: - Saved game library
+
+@MainActor
+struct SavedGameTests {
+
+    private func makeStore() -> (ShotStore, URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "SavedGameTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        return (ShotStore(root: root), root)
+    }
+
+    private func attempt(
+        at time: Double,
+        result: ShotAttempt.Result,
+        verdict: ShotAttempt.UserVerdict? = nil
+    ) -> ShotAttempt {
+        ShotAttempt(
+            id: UUID(), startFrame: 0, endFrame: 1, result: result,
+            trajectory: [BallObservation(
+                frameID: 0, center: CGPoint(x: 0.5, y: 0.5),
+                radius: 0.02, confidence: 0.9, timeSeconds: time
+            )],
+            crossings: [], rimContacts: 0, apexY: nil,
+            wasDetectedLate: false, rim: nil, userVerdict: verdict
+        )
+    }
+
+    @Test("Summaries describe a run without parsing it")
+    func summaryFromAttempts() {
+        let summary = SavedGameSummary(
+            assetIdentifier: "v",
+            attempts: [
+                attempt(at: 1, result: .made),
+                attempt(at: 2, result: .missed),
+                attempt(at: 3, result: .missed, verdict: .made),
+                attempt(at: 4, result: .made, verdict: .notAShot)
+            ]
+        )
+
+        // The false positive leaves the totals; the corrected miss counts as a make.
+        #expect(summary.attempts == 3)
+        #expect(summary.makes == 2)
+        #expect(summary.reviewed == 2)
+        #expect(summary.agreed == 0)
+    }
+
+    @Test("The library lists saved games newest first")
+    func libraryOrdersByDate() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let older = Date(timeIntervalSince1970: 1_000)
+        let newer = Date(timeIntervalSince1970: 2_000)
+
+        try store.saveSummary(SavedGameSummary(
+            assetIdentifier: "old", analysedAt: older,
+            attempts: 5, makes: 2, reviewed: 0, agreed: 0
+        ))
+        try store.saveSummary(SavedGameSummary(
+            assetIdentifier: "new", analysedAt: newer,
+            attempts: 3, makes: 3, reviewed: 0, agreed: 0
+        ))
+
+        let listed = store.summaries()
+        #expect(listed.map(\.assetIdentifier) == ["new", "old"])
+    }
+
+    @Test("A saved run reopens with its rulings intact")
+    func loadingRestoresRulings() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let id = "video"
+        let run = AnalysisRun(
+            assetIdentifier: id,
+            detectorConfig: ShotDetectorConfig(),
+            attempts: [
+                attempt(at: 10, result: .missed),
+                attempt(at: 20, result: .made),
+                attempt(at: 30, result: .abandoned)
+            ]
+        )
+        try store.saveRun(run)
+        try store.saveTruth(GroundTruthDocument(
+            assetIdentifier: id,
+            shots: [GroundTruthEntry(timeSeconds: 10.0, verdict: .made)]
+        ))
+
+        let loaded = store.load(for: id)
+        let state = GameState()
+        state.load(run: try #require(loaded.run), truth: loaded.truth)
+
+        // Resolved and abandoned attempts are sorted the way live events would have,
+        // so every view that works on a live game works on a reopened one.
+        #expect(state.shotTimeline.count == 2)
+        #expect(state.abandonedAttempts.count == 1)
+
+        // The stored ruling flipped the first shot.
+        #expect(state.stats.attempts == 2)
+        #expect(state.stats.makes == 2)
+        #expect(state.accuracy.reviewed == 1)
+        #expect(state.accuracy.wrongCalls == 1)
+    }
+
+    @Test("Correcting a reopened game writes back and survives another reopen")
+    func correctingReopenedGamePersists() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let id = "video"
+        try store.saveRun(AnalysisRun(
+            assetIdentifier: id,
+            detectorConfig: ShotDetectorConfig(),
+            attempts: [attempt(at: 42, result: .made)]
+        ))
+
+        // Reopen, correct.
+        let first = store.load(for: id)
+        let state = GameState()
+        state.load(run: try #require(first.run), truth: first.truth)
+
+        let shot = try #require(state.shotTimeline.first)
+        state.setVerdict(.missed, for: shot.id)
+
+        var document = first.truth
+        document.shots = GroundTruthMatcher.record(
+            verdict: .missed, atTime: 42, into: document.shots
+        )
+        try store.saveTruth(document)
+
+        // Reopen again — a fresh GameState, ids rematched by time.
+        let second = store.load(for: id)
+        let reopened = GameState()
+        reopened.load(run: try #require(second.run), truth: second.truth)
+
+        #expect(reopened.stats.makes == 0)
+        #expect(reopened.stats.attempts == 1)
+        #expect(reopened.shotTimeline.first?.userVerdict == .missed)
+    }
+
+    @Test("An empty library lists nothing rather than failing")
+    func emptyLibrary() {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(store.summaries().isEmpty)
+    }
+}

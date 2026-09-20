@@ -11,7 +11,7 @@ import CoreVideo
 
 /// Running tally of how the ball is being found, so the crop can be judged against the
 /// full-frame sweep it replaced rather than taken on faith.
-struct BallDetectionStats: Equatable {
+struct BallDetectionStats: Codable, Equatable {
     var framesProcessed = 0
 
     var croppedAttempts = 0
