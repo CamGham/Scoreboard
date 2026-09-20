@@ -18,7 +18,7 @@ import Foundation
 /// Vision normalized space (origin bottom-left, y up).
 enum BallROIPredictor {
 
-    struct Config {
+    struct Config: Codable, Equatable {
         /// Side of the crop as a fraction of frame *width*, before any growth.
         ///
         /// A shot crosses maybe 3–5% of the frame per frame, so a quarter-width window
@@ -39,6 +39,28 @@ enum BallROIPredictor {
         var maxFitRMSE: Double = 0.02
 
         init() {}
+
+        /// Lenient, for the same reason as `ShotDetectorConfig`: a saved run must stay
+        /// readable after a setting is added.
+        private enum CodingKeys: String, CodingKey {
+            case baseSideFraction, growthPerMiss, maxSideFraction
+            case missesBeforeFullFrame, maxFitRMSE
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let defaults = Config()
+
+            func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+                (try? container.decodeIfPresent(T.self, forKey: key)).flatMap { $0 } ?? fallback
+            }
+
+            baseSideFraction = value(.baseSideFraction, defaults.baseSideFraction)
+            growthPerMiss = value(.growthPerMiss, defaults.growthPerMiss)
+            maxSideFraction = value(.maxSideFraction, defaults.maxSideFraction)
+            missesBeforeFullFrame = value(.missesBeforeFullFrame, defaults.missesBeforeFullFrame)
+            maxFitRMSE = value(.maxFitRMSE, defaults.maxFitRMSE)
+        }
     }
 
     // MARK: Where to look

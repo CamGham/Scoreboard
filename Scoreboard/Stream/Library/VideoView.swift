@@ -39,6 +39,13 @@ struct VideoView: View {
     /// Saved analysis and corrections for this video.
     @State var store = ShotStore()
     @State var truth: GroundTruthDocument?
+
+    /// Identity of the analysis pass in progress, so repeated saves update one run.
+    @State var currentRunID: UUID?
+
+    /// Runs already stored for this video, checked before analysing again.
+    @State var existingRuns: [RunMetadata] = []
+    @State var showExistingAnalysisAlert = false
     var body: some View {
         VStack {
             switch assetState {
@@ -339,6 +346,13 @@ struct VideoView: View {
                 // rim means they never have to place it twice, and saved rulings are
                 // reapplied to attempts as they are detected.
                 if let assetIdentifier {
+                    // Analysing again adds a run rather than replacing the last one, so
+                    // say so before it happens.
+                    existingRuns = store.runs(for: assetIdentifier)
+                    if !existingRuns.isEmpty {
+                        showExistingAnalysisAlert = true
+                    }
+
                     let stored = store.loadTruth(for: assetIdentifier)
                     truth = stored
                     processor.tracker.gameState.applyStoredTruth(stored.shots)
@@ -377,6 +391,12 @@ struct VideoView: View {
                 print("error \(error.localizedDescription)")
             }
         }
+        .alert("Already analysed", isPresented: $showExistingAnalysisAlert) {
+            Button("Analyse again") { }
+            Button("Cancel", role: .cancel) { dismiss() }
+        } message: {
+            Text(existingAnalysisMessage)
+        }
         .sheet(isPresented: $showRimPlacement) {
             if let videoProcessor, let frame = videoProcessor.currentFrame {
                 RimPlacementView(
@@ -413,6 +433,20 @@ struct VideoView: View {
         CGPoint(x: point.x * viewSize.width, y: (1 - point.y) * viewSize.height)
     }
 
+    var existingAnalysisMessage: String {
+        let count = existingRuns.count
+        let passes = count == 1 ? "once" : "\(count) times"
+
+        guard let latest = existingRuns.first else {
+            return "This video has been analysed before."
+        }
+
+        let when = latest.analysedAt.formatted(.dateTime.day().month().hour().minute())
+        return "This video has been analysed \(passes), most recently on \(when) "
+            + "(\(latest.makes)/\(latest.attempts)). Analysing again keeps the earlier "
+            + "results and your corrections."
+    }
+
     /// Persist this pass of the detector, with the settings that produced it — accuracy
     /// numbers are meaningless without knowing which configuration they came from.
     func saveRun() {
@@ -422,20 +456,23 @@ struct VideoView: View {
         let attempts = gameState.reviewableAttempts
         guard !attempts.isEmpty else { return }
 
+        // One run id per analysis pass, so repeated saves during a session update the
+        // same run rather than piling up near-identical copies.
+        let id = currentRunID ?? UUID()
+        currentRunID = id
+
         let run = AnalysisRun(
+            id: id,
             assetIdentifier: assetIdentifier,
-            detectorConfig: ShotDetectorConfig(),
+            configuration: videoProcessor.tracker.currentConfiguration(),
             attempts: attempts,
             ballStats: videoProcessor.tracker.ballDetector?.stats
         )
 
         try? store.saveRun(run)
 
-        // The library list reads summaries rather than parsing every run, so one has to
-        // be written alongside.
-        try? store.saveSummary(
-            SavedGameSummary(assetIdentifier: assetIdentifier, attempts: attempts)
-        )
+        // The library list reads summaries rather than parsing every run.
+        try? store.refreshSummary(for: assetIdentifier, attempts: attempts)
     }
 
     /// Persist a ruling as time-keyed ground truth, so it survives re-analysis.

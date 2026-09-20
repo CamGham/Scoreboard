@@ -53,29 +53,91 @@ struct GroundTruthDocument: Codable, Equatable {
 /// The config is stored because comparing accuracy across detector versions is the whole
 /// point of keeping this data. Numbers without the settings that produced them can't be
 /// compared to anything.
-struct AnalysisRun: Codable, Equatable {
-    static let currentVersion = 1
+struct AnalysisRun: Codable, Equatable, Identifiable {
+    static let currentVersion = 2
 
     var version = AnalysisRun.currentVersion
+
+    /// Each pass gets its own identity, so re-analysing a video adds a run rather than
+    /// replacing the one before it.
+    var id: UUID
+
     var assetIdentifier: String
     var analysedAt: Date
 
-    var detectorConfig: ShotDetectorConfig
+    var configuration: RunConfiguration
     var attempts: [ShotAttempt]
     var ballStats: BallDetectionStats?
 
     init(
+        id: UUID = UUID(),
         assetIdentifier: String,
         analysedAt: Date = Date(),
-        detectorConfig: ShotDetectorConfig,
+        configuration: RunConfiguration,
         attempts: [ShotAttempt],
         ballStats: BallDetectionStats? = nil
     ) {
+        self.id = id
         self.assetIdentifier = assetIdentifier
         self.analysedAt = analysedAt
-        self.detectorConfig = detectorConfig
+        self.configuration = configuration
         self.attempts = attempts
         self.ballStats = ballStats
+    }
+
+    /// Header for the run index.
+    var metadata: RunMetadata {
+        let stats = ShotStats(attempts: attempts)
+        return RunMetadata(
+            id: id,
+            analysedAt: analysedAt,
+            configuration: configuration,
+            attempts: stats.attempts,
+            makes: stats.makes
+        )
+    }
+
+    // Version 1 stored a bare `detectorConfig` and had no id. Decode those into the
+    // current shape rather than discarding a user's existing analysis.
+    private enum CodingKeys: String, CodingKey {
+        case version, id, assetIdentifier, analysedAt, configuration, attempts, ballStats
+        case detectorConfig
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        assetIdentifier = try container.decode(String.self, forKey: .assetIdentifier)
+        analysedAt = try container.decode(Date.self, forKey: .analysedAt)
+        attempts = try container.decode([ShotAttempt].self, forKey: .attempts)
+        ballStats = try container.decodeIfPresent(BallDetectionStats.self, forKey: .ballStats)
+
+        if let configuration = try container.decodeIfPresent(
+            RunConfiguration.self, forKey: .configuration
+        ) {
+            self.configuration = configuration
+        } else {
+            let legacy = try container.decodeIfPresent(
+                ShotDetectorConfig.self, forKey: .detectorConfig
+            ) ?? ShotDetectorConfig()
+            self.configuration = RunConfiguration(shotDetector: legacy)
+        }
+    }
+
+    /// Written explicitly because `CodingKeys` carries the legacy `detectorConfig` key,
+    /// which has no matching property to synthesise from. Only current keys are written.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        try container.encode(version, forKey: .version)
+        try container.encode(id, forKey: .id)
+        try container.encode(assetIdentifier, forKey: .assetIdentifier)
+        try container.encode(analysedAt, forKey: .analysedAt)
+        try container.encode(configuration, forKey: .configuration)
+        try container.encode(attempts, forKey: .attempts)
+        try container.encodeIfPresent(ballStats, forKey: .ballStats)
     }
 }
 
@@ -135,6 +197,48 @@ enum GroundTruthMatcher {
         }
 
         return result
+    }
+
+    /// Pair each truth entry with the attempt that covers it, if any.
+    ///
+    /// The inverse view of `apply`: that answers "what did the user say about this
+    /// attempt", this answers "what did this run say about that moment" — which is what
+    /// comparing two runs needs, including the case where a run found nothing at all.
+    static func pair(
+        truth: [GroundTruthEntry],
+        with attempts: [ShotAttempt],
+        tolerance: Double = defaultTolerance
+    ) -> [(entry: GroundTruthEntry, attempt: ShotAttempt?)] {
+
+        var candidates: [(distance: Double, entryID: UUID, attemptIndex: Int)] = []
+
+        for entry in truth {
+            for (index, attempt) in attempts.enumerated() {
+                guard let time = attempt.keyTime else { continue }
+                let distance = abs(entry.timeSeconds - time)
+                if distance <= tolerance {
+                    candidates.append((distance, entry.id, index))
+                }
+            }
+        }
+
+        // Closest pairs win, and neither side is used twice.
+        candidates.sort { $0.distance < $1.distance }
+
+        var pairing: [UUID: Int] = [:]
+        var usedAttempts = Set<Int>()
+
+        for candidate in candidates {
+            guard pairing[candidate.entryID] == nil else { continue }
+            guard !usedAttempts.contains(candidate.attemptIndex) else { continue }
+
+            pairing[candidate.entryID] = candidate.attemptIndex
+            usedAttempts.insert(candidate.attemptIndex)
+        }
+
+        return truth.map { entry in
+            (entry, pairing[entry.id].map { attempts[$0] })
+        }
     }
 
     /// Fold a ruling into the stored truth, replacing any entry already covering that
@@ -218,6 +322,12 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
     var reviewed: Int
     var agreed: Int
 
+    /// How many times this video has been analysed.
+    var runCount: Int = 1
+
+    /// The run these numbers came from.
+    var latestRunID: UUID?
+
     var misses: Int { attempts - makes }
 
     var fieldGoalPercentage: Double {
@@ -234,7 +344,9 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
         attempts: Int,
         makes: Int,
         reviewed: Int,
-        agreed: Int
+        agreed: Int,
+        runCount: Int = 1,
+        latestRunID: UUID? = nil
     ) {
         self.assetIdentifier = assetIdentifier
         self.analysedAt = analysedAt
@@ -242,10 +354,18 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
         self.makes = makes
         self.reviewed = reviewed
         self.agreed = agreed
+        self.runCount = runCount
+        self.latestRunID = latestRunID
     }
 
     /// Build from the attempts as currently ruled.
-    init(assetIdentifier: String, analysedAt: Date = Date(), attempts shots: [ShotAttempt]) {
+    init(
+        assetIdentifier: String,
+        analysedAt: Date = Date(),
+        attempts shots: [ShotAttempt],
+        runCount: Int = 1,
+        latestRunID: UUID? = nil
+    ) {
         let stats = ShotStats(attempts: shots)
         let accuracy = DetectorAccuracy(attempts: shots)
 
@@ -255,7 +375,158 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
             attempts: stats.attempts,
             makes: stats.makes,
             reviewed: accuracy.reviewed,
-            agreed: accuracy.agreed
+            agreed: accuracy.agreed,
+            runCount: runCount,
+            latestRunID: latestRunID
         )
+    }
+}
+
+// MARK: - Run configuration
+
+/// Everything that affects what an analysis run produces.
+///
+/// Deliberately wider than `ShotDetectorConfig`. The model file, the crop geometry and
+/// the detection confidence floors all move the numbers, and none of them live in the
+/// shot detector's settings — so two runs could record identical `ShotDetectorConfig`
+/// values while having been produced by completely different pipelines. Comparing
+/// accuracy between runs is only meaningful if you know what actually differed.
+struct RunConfiguration: Codable, Equatable {
+
+    /// Where the rim came from, which changes the scoring plane and therefore verdicts.
+    enum RimSource: String, Codable {
+        case detected
+        case userPlaced
+        case none
+    }
+
+    var shotDetector: ShotDetectorConfig
+    var ballROI: BallROIPredictor.Config
+
+    var fullFrameBallConfidence: Double
+    var croppedBallConfidence: Double
+
+    var modelIdentifier: String
+    var rimSource: RimSource
+
+    /// App build that produced the run, to catch changes not captured above.
+    var appVersion: String
+
+    init(
+        shotDetector: ShotDetectorConfig = ShotDetectorConfig(),
+        ballROI: BallROIPredictor.Config = BallROIPredictor.Config(),
+        fullFrameBallConfidence: Double = 0.45,
+        croppedBallConfidence: Double = 0.25,
+        modelIdentifier: String = "unknown",
+        rimSource: RimSource = .none,
+        appVersion: String = RunConfiguration.currentAppVersion
+    ) {
+        self.shotDetector = shotDetector
+        self.ballROI = ballROI
+        self.fullFrameBallConfidence = fullFrameBallConfidence
+        self.croppedBallConfidence = croppedBallConfidence
+        self.modelIdentifier = modelIdentifier
+        self.rimSource = rimSource
+        self.appVersion = appVersion
+    }
+
+    /// Lenient, so a run saved before a setting existed still loads.
+    private enum CodingKeys: String, CodingKey {
+        case shotDetector, ballROI, fullFrameBallConfidence, croppedBallConfidence
+        case modelIdentifier, rimSource, appVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = RunConfiguration()
+
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)).flatMap { $0 } ?? fallback
+        }
+
+        shotDetector = value(.shotDetector, defaults.shotDetector)
+        ballROI = value(.ballROI, defaults.ballROI)
+        fullFrameBallConfidence = value(.fullFrameBallConfidence, defaults.fullFrameBallConfidence)
+        croppedBallConfidence = value(.croppedBallConfidence, defaults.croppedBallConfidence)
+        modelIdentifier = value(.modelIdentifier, defaults.modelIdentifier)
+        rimSource = value(.rimSource, defaults.rimSource)
+        appVersion = value(.appVersion, defaults.appVersion)
+    }
+
+    static var currentAppVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "0"
+        let build = info?["CFBundleVersion"] as? String ?? "0"
+        return "\(short) (\(build))"
+    }
+
+    /// Stable identity for "the same experiment".
+    ///
+    /// Two runs sharing a fingerprint were produced the same way, so a difference in
+    /// their results is noise rather than the effect of a change.
+    var fingerprint: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        guard let data = try? encoder.encode(self) else { return "unknown" }
+
+        // FNV-1a: short, stable across launches, and good enough to tell configurations
+        // apart. Swift's Hasher is seeded per-process and would not be.
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return String(hash, radix: 16)
+    }
+
+    /// A short description of how this run differs from another.
+    func differences(from other: RunConfiguration) -> [String] {
+        var changes: [String] = []
+
+        if modelIdentifier != other.modelIdentifier {
+            changes.append("model \(other.modelIdentifier) → \(modelIdentifier)")
+        }
+        if shotDetector.makeBallClearance != other.shotDetector.makeBallClearance {
+            changes.append(String(
+                format: "make clearance %.2f → %.2f",
+                other.shotDetector.makeBallClearance, shotDetector.makeBallClearance
+            ))
+        }
+        if shotDetector.rimZoneWidthInRimRadii != other.shotDetector.rimZoneWidthInRimRadii {
+            changes.append(String(
+                format: "rim zone %.2f → %.2f",
+                other.shotDetector.rimZoneWidthInRimRadii, shotDetector.rimZoneWidthInRimRadii
+            ))
+        }
+        if ballROI.baseSideFraction != other.ballROI.baseSideFraction {
+            changes.append(String(
+                format: "crop %.2f → %.2f",
+                other.ballROI.baseSideFraction, ballROI.baseSideFraction
+            ))
+        }
+        if rimSource != other.rimSource {
+            changes.append("rim \(other.rimSource.rawValue) → \(rimSource.rawValue)")
+        }
+        if appVersion != other.appVersion {
+            changes.append("build \(other.appVersion) → \(appVersion)")
+        }
+
+        return changes
+    }
+}
+
+/// Lightweight header for one run, so the list of runs for a video can be drawn without
+/// parsing every trajectory in every run.
+struct RunMetadata: Codable, Equatable, Identifiable {
+    var id: UUID
+    var analysedAt: Date
+    var configuration: RunConfiguration
+
+    var attempts: Int
+    var makes: Int
+
+    var fieldGoalPercentage: Double {
+        attempts > 0 ? (Double(makes) / Double(attempts)) * 100 : 0
     }
 }

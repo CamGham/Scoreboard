@@ -9,6 +9,13 @@ import Foundation
 import Vision
 
 class ObjectDetector {
+
+    /// Which model is in use.
+    ///
+    /// Recorded with every analysis run: swapping the model changes results completely,
+    /// so two runs that don't name their model can't be meaningfully compared.
+    static let modelIdentifier = "best5sRefined"
+
     static func createDetector() async throws -> VNCoreMLModel {
         guard let customModel = try? best5sRefined(configuration: .init()).model else {
             throw ObjectError.creation

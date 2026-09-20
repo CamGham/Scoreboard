@@ -1418,7 +1418,7 @@ struct ShotStoreTests {
         func run(resultAt time: Double, result: ShotAttempt.Result) -> AnalysisRun {
             AnalysisRun(
                 assetIdentifier: id,
-                detectorConfig: ShotDetectorConfig(),
+                configuration: RunConfiguration(),
                 attempts: [ShotAttempt(
                     id: UUID(), startFrame: 0, endFrame: 1, result: result,
                     trajectory: [BallObservation(
@@ -1556,7 +1556,7 @@ struct SavedGameTests {
         let id = "video"
         let run = AnalysisRun(
             assetIdentifier: id,
-            detectorConfig: ShotDetectorConfig(),
+            configuration: RunConfiguration(),
             attempts: [
                 attempt(at: 10, result: .missed),
                 attempt(at: 20, result: .made),
@@ -1593,7 +1593,7 @@ struct SavedGameTests {
         let id = "video"
         try store.saveRun(AnalysisRun(
             assetIdentifier: id,
-            detectorConfig: ShotDetectorConfig(),
+            configuration: RunConfiguration(),
             attempts: [attempt(at: 42, result: .made)]
         ))
 
@@ -1626,5 +1626,419 @@ struct SavedGameTests {
         let (store, root) = makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(store.summaries().isEmpty)
+    }
+}
+
+// MARK: - Multiple analysis runs
+
+struct MultiRunTests {
+
+    private func makeStore() -> (ShotStore, URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "MultiRunTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        return (ShotStore(root: root), root)
+    }
+
+    private func run(
+        _ id: String,
+        at date: Date,
+        makes: Int,
+        attempts: Int,
+        configuration: RunConfiguration = RunConfiguration()
+    ) -> AnalysisRun {
+        let shots = (0..<attempts).map { index in
+            ShotAttempt(
+                id: UUID(), startFrame: 0, endFrame: 1,
+                result: index < makes ? .made : .missed,
+                trajectory: [BallObservation(
+                    frameID: 0, center: CGPoint(x: 0.5, y: 0.5),
+                    radius: 0.02, confidence: 0.9, timeSeconds: Double(index) * 10
+                )],
+                crossings: [], rimContacts: 0, apexY: nil,
+                wasDetectedLate: false, rim: nil, userVerdict: nil
+            )
+        }
+
+        return AnalysisRun(
+            assetIdentifier: id, analysedAt: date,
+            configuration: configuration, attempts: shots
+        )
+    }
+
+    @Test("Analysing again adds a run instead of replacing the last")
+    func runsAccumulate() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try store.saveRun(run("v", at: Date(timeIntervalSince1970: 100), makes: 1, attempts: 4))
+        try store.saveRun(run("v", at: Date(timeIntervalSince1970: 200), makes: 3, attempts: 4))
+
+        let listed = store.runs(for: "v")
+        #expect(listed.count == 2)
+        // Newest first, and both sets of numbers are still available.
+        #expect(listed.map(\.makes) == [3, 1])
+        #expect(store.latestRun(for: "v")?.attempts.count == 4)
+    }
+
+    @Test("An earlier run can still be opened by id")
+    func earlierRunsRemainReadable() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = run("v", at: Date(timeIntervalSince1970: 100), makes: 1, attempts: 2)
+        try store.saveRun(first)
+        try store.saveRun(run("v", at: Date(timeIntervalSince1970: 200), makes: 2, attempts: 2))
+
+        let reopened = try #require(store.load(for: "v", runID: first.id).run)
+        #expect(reopened.id == first.id)
+        #expect(reopened.attempts.filter { $0.result == .made }.count == 1)
+    }
+
+    @Test("Corrections apply to every run, old and new")
+    func truthAppliesAcrossRuns() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = run("v", at: Date(timeIntervalSince1970: 100), makes: 0, attempts: 2)
+        try store.saveRun(first)
+        try store.saveRun(run("v", at: Date(timeIntervalSince1970: 200), makes: 0, attempts: 2))
+
+        // One shared, detector-independent record of what really happened.
+        try store.saveTruth(GroundTruthDocument(
+            assetIdentifier: "v",
+            shots: [GroundTruthEntry(timeSeconds: 0, verdict: .made)]
+        ))
+
+        #expect(store.load(for: "v").run?.attempts.first?.userVerdict == .made)
+        #expect(store.load(for: "v", runID: first.id).run?.attempts.first?.userVerdict == .made)
+    }
+
+    @Test("Old runs are pruned once the retention limit is passed")
+    func retentionPrunesOldest() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let oldest = run("v", at: Date(timeIntervalSince1970: 1), makes: 0, attempts: 1)
+        try store.saveRun(oldest)
+
+        for index in 2...(store.retentionLimit + 2) {
+            try store.saveRun(run(
+                "v", at: Date(timeIntervalSince1970: Double(index)), makes: 0, attempts: 1
+            ))
+        }
+
+        let listed = store.runs(for: "v")
+        #expect(listed.count == store.retentionLimit)
+        // The oldest is gone from the index and from disk.
+        #expect(listed.contains { $0.id == oldest.id } == false)
+        #expect(store.loadRun(oldest.id, for: "v") == nil)
+    }
+
+    @Test("Saving the same run id twice updates rather than duplicates")
+    func resavingSameRunUpdates() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var first = run("v", at: Date(timeIntervalSince1970: 100), makes: 1, attempts: 2)
+        try store.saveRun(first)
+
+        // The same analysis pass saving again as more shots are detected.
+        first.attempts.append(ShotAttempt(
+            id: UUID(), startFrame: 0, endFrame: 1, result: .made,
+            trajectory: [], crossings: [], rimContacts: 0, apexY: nil,
+            wasDetectedLate: false, rim: nil, userVerdict: nil
+        ))
+        try store.saveRun(first)
+
+        #expect(store.runs(for: "v").count == 1)
+        #expect(store.loadRun(first.id, for: "v")?.attempts.count == 3)
+    }
+
+    @Test("hasAnalysis reports whether a video has been seen before")
+    func hasAnalysisReporting() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(store.hasAnalysis(for: "v") == false)
+        try store.saveRun(run("v", at: Date(), makes: 0, attempts: 1))
+        #expect(store.hasAnalysis(for: "v"))
+    }
+
+    @Test("A version 1 run file is migrated, not lost")
+    func legacyRunIsMigrated() throws {
+        let (store, root) = makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Hand-write the old shape: no id, a bare detectorConfig, at the old path.
+        let directory = root.appending(
+            path: "v".addingPercentEncoding(withAllowedCharacters: .alphanumerics)!,
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let legacy = """
+        {
+          "assetIdentifier": "v",
+          "analysedAt": "2026-01-01T00:00:00Z",
+          "detectorConfig": { "makeBallClearance": 0.75 },
+          "attempts": []
+        }
+        """
+        try Data(legacy.utf8).write(to: directory.appending(path: "run.json"))
+
+        let listed = store.runs(for: "v")
+
+        #expect(listed.count == 1)
+        // The old settings survive the move into the wider configuration record.
+        let migrated = try #require(listed.first)
+        #expect(migrated.configuration.shotDetector.makeBallClearance == 0.75)
+        // Settings the old file never had fall back to current defaults.
+        #expect(migrated.configuration.shotDetector.fitWindow == ShotDetectorConfig().fitWindow)
+        // And the legacy file is cleaned up.
+        #expect(FileManager.default.fileExists(
+            atPath: directory.appending(path: "run.json").path()) == false)
+    }
+}
+
+struct RunConfigurationTests {
+
+    @Test("Identical configurations share a fingerprint")
+    func fingerprintIsStable() {
+        let a = RunConfiguration(modelIdentifier: "m", appVersion: "1 (1)")
+        let b = RunConfiguration(modelIdentifier: "m", appVersion: "1 (1)")
+        #expect(a.fingerprint == b.fingerprint)
+    }
+
+    @Test("A different model gives a different fingerprint")
+    func modelChangesFingerprint() {
+        let a = RunConfiguration(modelIdentifier: "best5sRefined", appVersion: "1 (1)")
+        let b = RunConfiguration(modelIdentifier: "retrained", appVersion: "1 (1)")
+
+        // The model isn't in ShotDetectorConfig, which is exactly why the wider record
+        // exists — these two runs would otherwise look identically configured.
+        #expect(a.fingerprint != b.fingerprint)
+    }
+
+    @Test("Crop geometry changes the fingerprint")
+    func roiChangesFingerprint() {
+        var tighter = BallROIPredictor.Config()
+        tighter.baseSideFraction = 0.15
+
+        let a = RunConfiguration(appVersion: "1 (1)")
+        let b = RunConfiguration(ballROI: tighter, appVersion: "1 (1)")
+        #expect(a.fingerprint != b.fingerprint)
+    }
+
+    @Test("Differences read as a human-legible list")
+    func describesDifferences() {
+        var changed = ShotDetectorConfig()
+        changed.makeBallClearance = 0.9
+
+        let baseline = RunConfiguration(modelIdentifier: "old", appVersion: "1 (1)")
+        let updated = RunConfiguration(
+            shotDetector: changed, modelIdentifier: "new", appVersion: "1 (1)"
+        )
+
+        let differences = updated.differences(from: baseline)
+        #expect(differences.count == 2)
+        #expect(differences.contains { $0.contains("model") })
+        #expect(differences.contains { $0.contains("clearance") })
+    }
+
+    @Test("Identical configurations report no differences")
+    func noDifferencesWhenSame() {
+        let config = RunConfiguration(appVersion: "1 (1)")
+        #expect(config.differences(from: config).isEmpty)
+    }
+}
+
+// MARK: - Run comparison
+
+struct RunComparisonTests {
+
+    private func attempt(at time: Double, _ result: ShotAttempt.Result) -> ShotAttempt {
+        ShotAttempt(
+            id: UUID(), startFrame: 0, endFrame: 1, result: result,
+            trajectory: [BallObservation(
+                frameID: 0, center: CGPoint(x: 0.5, y: 0.5),
+                radius: 0.02, confidence: 0.9, timeSeconds: time
+            )],
+            crossings: [], rimContacts: 0, apexY: nil,
+            wasDetectedLate: false, rim: nil, userVerdict: nil
+        )
+    }
+
+    private func run(
+        _ attempts: [ShotAttempt],
+        configuration: RunConfiguration = RunConfiguration(appVersion: "1 (1)")
+    ) -> AnalysisRun {
+        AnalysisRun(
+            assetIdentifier: "v", analysedAt: Date(),
+            configuration: configuration, attempts: attempts
+        )
+    }
+
+    @Test("A fixed shot reads as improved, a broken one as regressed")
+    func detectsBothDirections() {
+        let truth = [
+            GroundTruthEntry(timeSeconds: 10, verdict: .made),
+            GroundTruthEntry(timeSeconds: 20, verdict: .missed)
+        ]
+
+        let comparison = RunComparator.compare(
+            baseline: run([attempt(at: 10, .missed), attempt(at: 20, .missed)]),
+            candidate: run([attempt(at: 10, .made), attempt(at: 20, .made)]),
+            truth: truth
+        )
+
+        #expect(comparison.improved.count == 1)
+        #expect(comparison.regressed.count == 1)
+
+        // One fixed and one broken nets to zero — which is exactly the case a bare
+        // agreement rate would report as "no change".
+        #expect(comparison.netChange == 0)
+        #expect(comparison.baselineAccuracy == comparison.candidateAccuracy)
+    }
+
+    @Test("A net improvement is reported as such")
+    func netImprovement() {
+        let truth = (0..<4).map {
+            GroundTruthEntry(timeSeconds: Double($0) * 10, verdict: .made)
+        }
+
+        let comparison = RunComparator.compare(
+            baseline: run((0..<4).map { attempt(at: Double($0) * 10, .missed) }),
+            candidate: run((0..<4).map { attempt(at: Double($0) * 10, $0 < 3 ? .made : .missed) }),
+            truth: truth
+        )
+
+        #expect(comparison.improved.count == 3)
+        #expect(comparison.regressed.isEmpty)
+        #expect(comparison.netChange == 3)
+        #expect(comparison.bothWrong == 1)
+    }
+
+    @Test("Finding a shot the previous run missed counts as improved")
+    func newlyFoundShotIsImprovement() {
+        let truth = [GroundTruthEntry(timeSeconds: 10, verdict: .made)]
+
+        let comparison = RunComparator.compare(
+            baseline: run([]),
+            candidate: run([attempt(at: 10, .made)]),
+            truth: truth
+        )
+
+        #expect(comparison.improved.count == 1)
+        #expect(comparison.rows.first?.baseline.outcome == .notFound)
+        #expect(comparison.rows.first?.baseline.isCorrect == false)
+        #expect(comparison.rows.first?.candidate.isCorrect == true)
+    }
+
+    @Test("For a moment ruled not-a-shot, finding nothing is correct")
+    func notAShotInvertsCorrectness() {
+        let truth = [GroundTruthEntry(timeSeconds: 10, verdict: .notAShot)]
+
+        let comparison = RunComparator.compare(
+            baseline: run([attempt(at: 10, .made)]),
+            candidate: run([]),
+            truth: truth
+        )
+
+        // The baseline invented a shot; the candidate correctly found none.
+        #expect(comparison.rows.first?.baseline.isCorrect == false)
+        #expect(comparison.rows.first?.candidate.isCorrect == true)
+        #expect(comparison.improved.count == 1)
+    }
+
+    @Test("Correctness is judged on the detector's call, not the correction")
+    func judgesDetectorNotCorrectedResult() {
+        // The attempt already carries the user's correction; it must not be used to
+        // decide whether the detector was right — that would score everything perfect.
+        var corrected = attempt(at: 10, .missed)
+        corrected.userVerdict = .made
+
+        let comparison = RunComparator.compare(
+            baseline: run([corrected]),
+            candidate: run([corrected]),
+            truth: [GroundTruthEntry(timeSeconds: 10, verdict: .made)]
+        )
+
+        #expect(comparison.rows.first?.baseline.isCorrect == false)
+        #expect(comparison.bothWrong == 1)
+    }
+
+    @Test("Shots outside the ruling set are counted but not judged")
+    func unreviewedAttemptsAreCounted() {
+        let comparison = RunComparator.compare(
+            baseline: run([attempt(at: 10, .made)]),
+            candidate: run([attempt(at: 10, .made), attempt(at: 90, .made)]),
+            truth: [GroundTruthEntry(timeSeconds: 10, verdict: .made)]
+        )
+
+        #expect(comparison.rows.count == 1)
+        // The shot at 90s has no ruling, so the comparison can't speak to it.
+        #expect(comparison.unreviewedAttempts == 1)
+    }
+
+    @Test("Identical settings are flagged, so a difference reads as noise")
+    func identicalConfigurationIsFlagged() {
+        let config = RunConfiguration(appVersion: "1 (1)")
+
+        let same = RunComparator.compare(
+            baseline: run([], configuration: config),
+            candidate: run([], configuration: config),
+            truth: []
+        )
+        #expect(same.isSameConfiguration)
+        #expect(same.configurationChanges.isEmpty)
+
+        let different = RunComparator.compare(
+            baseline: run([], configuration: config),
+            candidate: run([], configuration: RunConfiguration(
+                modelIdentifier: "retrained", appVersion: "1 (1)"
+            )),
+            truth: []
+        )
+        #expect(different.isSameConfiguration == false)
+        #expect(different.configurationChanges.isEmpty == false)
+    }
+
+    @Test("Rows come back in time order")
+    func rowsAreTimeOrdered() {
+        let truth = [
+            GroundTruthEntry(timeSeconds: 30, verdict: .made),
+            GroundTruthEntry(timeSeconds: 10, verdict: .made),
+            GroundTruthEntry(timeSeconds: 20, verdict: .made)
+        ]
+
+        let comparison = RunComparator.compare(baseline: run([]), candidate: run([]), truth: truth)
+        #expect(comparison.rows.map(\.truth.timeSeconds) == [10, 20, 30])
+    }
+
+    @Test("With no rulings there is nothing to compare")
+    func noTruthMeansNoRows() {
+        let comparison = RunComparator.compare(
+            baseline: run([attempt(at: 10, .made)]),
+            candidate: run([attempt(at: 10, .missed)]),
+            truth: []
+        )
+
+        #expect(comparison.rows.isEmpty)
+        #expect(comparison.netChange == 0)
+        #expect(comparison.baselineAccuracy == 0)
+    }
+
+    @Test("Each ruling pairs with at most one attempt")
+    func pairingIsOneToOne() {
+        let truth = [GroundTruthEntry(timeSeconds: 10, verdict: .made)]
+
+        // Two attempts within tolerance; only the nearer should pair.
+        let paired = GroundTruthMatcher.pair(
+            truth: truth,
+            with: [attempt(at: 10.9, .missed), attempt(at: 10.05, .made)]
+        )
+
+        #expect(paired.count == 1)
+        #expect(paired.first?.attempt?.result == .made)
     }
 }

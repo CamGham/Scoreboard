@@ -75,17 +75,19 @@ final class BallDetector {
     }
 
     private let model: VNCoreMLModel
-    private let config: BallROIPredictor.Config
+
+    /// Crop geometry in use. Recorded with the run, because it changes what gets found.
+    let config: BallROIPredictor.Config
 
     /// Confidence floor when sweeping the full frame.
-    private let fullFrameConfidence: Float = 0.45
+    let fullFrameConfidence: Float = 0.45
 
     /// Confidence floor inside the crop.
     ///
     /// Lower on purpose. Location is already strongly constrained by the prediction, so
     /// a middling box in the right place is far more likely to be the ball than the same
     /// score anywhere in a full frame.
-    private let croppedConfidence: Float = 0.25
+    let croppedConfidence: Float = 0.25
 
     private(set) var consecutiveMisses = 0
     private(set) var stats = BallDetectionStats()

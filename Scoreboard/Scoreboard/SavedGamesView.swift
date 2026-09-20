@@ -72,6 +72,10 @@ private struct SavedGameRow: View {
                 HStack(spacing: 6) {
                     ShotTag(text: String(format: "FG %.0f%%", summary.fieldGoalPercentage))
 
+                    if summary.runCount > 1 {
+                        ShotTag(text: "\(summary.runCount) analyses", tint: .blue)
+                    }
+
                     if summary.reviewed > 0 {
                         ShotTag(
                             text: String(format: "%d reviewed · %.0f%% agreed",
@@ -112,6 +116,9 @@ struct SavedGameDetailView: View {
     @State private var isLoading = true
     @State private var videoFailure: VideoLibrary.LookupFailure?
 
+    @State private var runCount = 0
+    @State private var showComparison = false
+
     var body: some View {
         Group {
             if isLoading {
@@ -139,6 +146,24 @@ struct SavedGameDetailView: View {
         }
         .navigationTitle(summary.analysedAt.formatted(.dateTime.day().month().hour().minute()))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if runCount > 1 {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showComparison = true
+                    } label: {
+                        Label("Compare", systemImage: "arrow.left.arrow.right")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showComparison) {
+            RunComparisonView(
+                assetIdentifier: summary.assetIdentifier,
+                store: store,
+                onDismiss: { showComparison = false }
+            )
+        }
         .task { await load() }
     }
 
@@ -148,6 +173,7 @@ struct SavedGameDetailView: View {
         let loaded = store.load(for: summary.assetIdentifier)
         run = loaded.run
         truth = loaded.truth
+        runCount = store.runs(for: summary.assetIdentifier).count
 
         if let run = loaded.run {
             gameState.load(run: run, truth: loaded.truth)
@@ -202,13 +228,11 @@ struct SavedGameDetailView: View {
         truth = document
         try? store.saveTruth(document)
 
-        // Keep the library row in step with the corrected totals.
-        try? store.saveSummary(
-            SavedGameSummary(
-                assetIdentifier: summary.assetIdentifier,
-                analysedAt: summary.analysedAt,
-                attempts: gameState.reviewableAttempts
-            )
+        // Keep the library row in step with the corrected totals, preserving the run
+        // count rather than flattening it back to one.
+        try? store.refreshSummary(
+            for: summary.assetIdentifier,
+            attempts: gameState.reviewableAttempts
         )
     }
 }
