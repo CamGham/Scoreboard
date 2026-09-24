@@ -168,3 +168,56 @@ func snapsToNearestOfSeveral() {
 func noMarkersMeansNoSnap() {
     #expect(ShotMarker.snapTarget(for: 12, in: [], within: 2.0) == nil)
 }
+
+// MARK: - Positioning inside a shot
+
+/// Markers with a realistic padded window either side of the key moment.
+private func windowedMarker(at time: Double, ordinal: Int = 1) -> ShotMarker {
+    ShotMarker(
+        id: UUID(),
+        ordinal: ordinal,
+        time: time,
+        window: (time - 1.2)...(time + 0.75),
+        result: .made,
+        isNotAShot: false,
+        isCorrected: false,
+        isCloseCall: false
+    )
+}
+
+@Test("The shot the playhead is inside is the one the detail bar opens on")
+func anchorIsTheShotYouAreIn() {
+    let markers = [windowedMarker(at: 12), windowedMarker(at: 40, ordinal: 2)]
+
+    // Mid-flight in the first shot.
+    #expect(ShotMarker.anchor(at: 11.4, in: markers)?.time == 12)
+
+    // In the run-up, which is inside the padded window.
+    #expect(ShotMarker.anchor(at: 11.0, in: markers)?.time == 12)
+
+    // Between shots: no shot to open on.
+    #expect(ShotMarker.anchor(at: 25, in: markers) == nil)
+}
+
+@Test("Where windows overlap, the nearer key moment wins")
+func anchorPicksTheNearerShot() {
+    let first = windowedMarker(at: 12)
+    let second = windowedMarker(at: 12.9, ordinal: 2)
+
+    #expect(ShotMarker.anchor(at: 12.8, in: [first, second])?.time == 12.9)
+    #expect(ShotMarker.anchor(at: 12.1, in: [first, second])?.time == 12)
+}
+
+@Test("Every route to a shot lands in the same place")
+func landingIsShared() {
+    let shot = windowedMarker(at: 12)
+
+    // Tapping the bar, scrubbing onto it and the shot-to-shot buttons all read this, so
+    // they can't drift apart. Flipping `ShotMarker.landing` moves all three at once.
+    switch ShotMarker.landing {
+    case .keyMoment:
+        #expect(shot.landingTime == shot.time)
+    case .runUp:
+        #expect(shot.landingTime == shot.window.lowerBound)
+    }
+}

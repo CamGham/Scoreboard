@@ -259,3 +259,35 @@ func rangedPassCoversOnlyItsWindow() async throws {
     #expect(reported.last == 1)
     #expect(reported.allSatisfy { $0 >= 0 && $0 <= 1 })
 }
+
+// MARK: - The pass's own tally
+
+@Test("Collecting a pass's results doesn't silence its own shot tally")
+func collectorRunsAlongsideTheTrackersOwnHandler() {
+    // The bug: the collector replaced the handler feeding the tracker's GameState, so a
+    // watched re-analysis showed 0/0 on screen while finding shots perfectly well.
+    let found = AttemptCollector()
+
+    var delivered = 0
+    let handler = SectionReanalyser.collecting(
+        into: found,
+        alongside: { _ in delivered += 1 }
+    )
+
+    handler(.attemptResolved(attempt(at: 12)))
+    handler(.rimContact(id: UUID()))
+
+    #expect(found.attempts.count == 1)
+    // Every event still reaches the tracker's own listener, not just resolutions.
+    #expect(delivered == 2)
+}
+
+@Test("With nothing else listening, collecting still works")
+func collectorHandlesNoExistingHandler() {
+    let found = AttemptCollector()
+    let handler = SectionReanalyser.collecting(into: found, alongside: nil)
+
+    handler(.attemptResolved(attempt(at: 3)))
+
+    #expect(found.attempts.count == 1)
+}

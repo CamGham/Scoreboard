@@ -165,16 +165,10 @@ struct AnalysisReviewView: View {
         )
     }
 
-    /// The shot the playhead is inside, if any. Overlapping windows are broken by
-    /// whichever key moment is closest.
+    /// The shot the playhead is inside, if any.
     private var activeMarker: ShotMarker? {
         guard let player else { return nil }
-        let time = player.currentTime
-
-        let containing = markers.filter { $0.window.contains(time) }
-        guard !containing.isEmpty else { return nil }
-
-        return containing.min { abs($0.time - time) < abs($1.time - time) }
+        return ShotMarker.anchor(at: player.currentTime, in: markers)
     }
 
     private var activeAttempt: ShotAttempt? {
@@ -385,6 +379,25 @@ struct AnalysisReviewView: View {
         if let player {
             VStack(spacing: 8) {
                 shotReadout(player)
+
+                // Only while the playhead is inside a shot; the space is held either way
+                // so the controls don't jump as shots come and go.
+                Group {
+                    if let marker = activeMarker, player.duration > 0 {
+                        ShotWindowScrubber(
+                            marker: marker,
+                            currentTime: player.currentTime,
+                            caretFraction: marker.time / player.duration,
+                            onScrubBegan: { player.beginScrubbing() },
+                            onScrub: { player.scrub(to: $0) },
+                            onScrubEnded: { player.endScrubbing() }
+                        )
+                        .transition(.opacity)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(height: 40)
 
                 ShotScrubber(
                     duration: player.duration,
@@ -801,11 +814,11 @@ struct AnalysisReviewView: View {
 
     // MARK: Shot navigation
 
-    /// Land on the run-up rather than the rim crossing — a shot makes no sense from
-    /// halfway through its arc.
     private func jump(to marker: ShotMarker?, player: AnalysisReviewPlayer) {
         guard let marker else { return }
-        player.jump(to: marker.window.lowerBound)
+        // Same landing point as tapping or scrubbing onto the shot — see
+        // `ShotMarker.landing`, which is the single place to change it.
+        player.jump(to: marker.landingTime)
     }
 
     private func nextMarker(from time: Double) -> ShotMarker? {

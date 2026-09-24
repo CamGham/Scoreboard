@@ -253,16 +253,19 @@ final class SectionReanalyser {
 
         let span = max(range.upperBound - range.lowerBound, 0.1)
 
-        // Take the events straight off the processing thread. The tracker's own
-        // `GameState` is a main-actor view for a UI that isn't here, and routing through
-        // it would mean waiting on hops that may not have landed when the pass ends.
+        // Take the events straight off the processing thread: routing the results through
+        // the tracker's main-actor `GameState` would mean waiting on hops that may not
+        // have landed when the pass ends.
+        //
+        // Alongside, not instead of — that `GameState` is what the live readout counts,
+        // so displacing its handler left a watched pass showing 0/0 however many shots it
+        // was finding.
         let found = AttemptCollector()
 
-        processor.tracker.shotTracker.onEvent = { event in
-            if case .attemptResolved(let attempt) = event {
-                found.append(attempt)
-            }
-        }
+        processor.tracker.shotTracker.onEvent = Self.collecting(
+            into: found,
+            alongside: processor.tracker.shotTracker.onEvent
+        )
 
         // Throttled: a report per frame would be thirty main-actor hops a second to move
         // a progress bar by a pixel.
@@ -294,11 +297,27 @@ final class SectionReanalyser {
     }
 }
 
+extension SectionReanalyser {
+
+    /// Gather resolved attempts without displacing whatever else is listening.
+    nonisolated static func collecting(
+        into found: AttemptCollector,
+        alongside existing: ((ShotEvent) -> Void)?
+    ) -> (ShotEvent) -> Void {
+        { event in
+            if case .attemptResolved(let attempt) = event {
+                found.append(attempt)
+            }
+            existing?(event)
+        }
+    }
+}
+
 /// Gathers resolved attempts from the frame-processing thread.
 ///
 /// A box rather than a captured local, so the ownership is obvious: the analysis loop
 /// writes, and only reads once the loop has finished.
-private final class AttemptCollector {
+final class AttemptCollector {
     private(set) var attempts: [ShotAttempt] = []
 
     func append(_ attempt: ShotAttempt) {

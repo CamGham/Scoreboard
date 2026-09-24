@@ -81,6 +81,40 @@ struct ShotMarker: Identifiable, Equatable {
         return nearest
     }
 
+    /// Where landing on a shot puts the playhead.
+    ///
+    /// Every route to a shot uses this — tapping the bar, scrubbing onto it, and the
+    /// shot-to-shot buttons — so they can't disagree with each other. Change this one
+    /// value to land on the run-up instead; nothing else needs touching.
+    ///
+    /// It defaults to the key moment because that is what the marker sits on and what the
+    /// timeline cards show: the rim crossing that decided the shot. Reaching the run-up
+    /// from there is what the shot-window scrubber is for.
+    enum Landing {
+        /// The rim crossing — the end of the shot, and the frame that settles it.
+        case keyMoment
+        /// The start of the padded window, a beat before the release.
+        case runUp
+    }
+
+    static let landing: Landing = .keyMoment
+
+    var landingTime: Double {
+        switch Self.landing {
+        case .keyMoment: return time
+        case .runUp: return window.lowerBound
+        }
+    }
+
+    /// The shot the playhead is inside, if any.
+    ///
+    /// Overlapping windows are broken by whichever key moment is closest.
+    static func anchor(at time: Double, in markers: [ShotMarker]) -> ShotMarker? {
+        markers
+            .filter { $0.window.contains(time) }
+            .min { abs($0.time - time) < abs($1.time - time) }
+    }
+
     /// Build the marker set for a clip, in time order.
     ///
     /// Attempts with no key time are dropped rather than pinned to zero — those come from
@@ -155,6 +189,7 @@ struct ShotScrubber: View {
     /// Reports the edited range and which end moved, so the caller can show that frame.
     var onEditRange: ((ClosedRange<Double>, ScrubberEdge) -> Void)?
 
+
     let onScrubBegan: () -> Void
     let onScrub: (Double) -> Void
     let onScrubEnded: () -> Void
@@ -172,6 +207,7 @@ struct ShotScrubber: View {
 
     /// How close a finger has to come to a marker before it snaps, in points.
     private let snapRadius: CGFloat = 13
+
 
     private var isMarking: Bool { editingRange != nil }
 
@@ -399,6 +435,7 @@ struct ShotScrubber: View {
             }
             .onEnded { value in
                 commit(x: value.location.x, width: width)
+
                 isDragging = false
                 snappedMarkerID = nil
                 activeEdge = nil
@@ -412,13 +449,12 @@ struct ShotScrubber: View {
         guard duration > 0 else { return }
 
         let raw = time(atX: location, width: width)
-        let usable = max(width - inset * 2, 1)
 
-        // Convert the snap radius into seconds for this bar width, so the magnetism is a
-        // constant distance on screen no matter how long the clip is.
-        let radius = (Double(snapRadius) / Double(usable)) * duration
-
-        let snapped = ShotMarker.snapTarget(for: raw, in: markers, within: radius)
+        let snapped = ShotMarker.snapTarget(
+            for: raw,
+            in: markers,
+            within: snapSeconds(width: width)
+        )
 
         if let snapped {
             if snappedMarkerID != snapped.id {
@@ -429,7 +465,9 @@ struct ShotScrubber: View {
             snappedMarkerID = nil
         }
 
-        let target = snapped?.time ?? raw
+        // Landing on a shot means landing where `ShotMarker.landing` says, so a scrub
+        // onto one and a tap on one end up in the same place.
+        let target = snapped?.landingTime ?? raw
 
         if let editingRange, let activeEdge, let onEditRange {
             onEditRange(moving(editingRange, edge: activeEdge, to: target), activeEdge)
@@ -477,6 +515,13 @@ struct ShotScrubber: View {
 
     private var snappedMarker: ShotMarker? {
         markers.first { $0.id == snappedMarkerID }
+    }
+
+    /// The snap radius in seconds for this bar width, so the magnetism is a constant
+    /// distance on screen no matter how long the clip is.
+    private func snapSeconds(width: CGFloat) -> Double {
+        let usable = max(width - inset * 2, 1)
+        return (Double(snapRadius) / Double(usable)) * duration
     }
 
     private func x(for time: Double, width: CGFloat) -> CGFloat {
