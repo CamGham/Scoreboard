@@ -46,7 +46,35 @@ class VideoProcessor {
     var trackSize: CGSize
     
     var tracker = VisionTracker()
-    
+
+    /// Frames the track claims to run at. Only an approximation on variable-frame-rate
+    /// footage, so it is used for estimates — never for timing.
+    var nominalFrameRate: Float = 30
+
+    /// Whether each decoded frame is turned into a `currentFrame` image.
+    ///
+    /// Decoding to a `CGImage`, and the redraw it triggers, costs more than the detection
+    /// itself. A pass nobody is watching — a re-analysis, or a first pass the user chose
+    /// not to watch — turns this off and keeps the CPU for the work.
+    ///
+    /// A `var` so the choice can be changed mid-pass: switching to and from watching is
+    /// just a matter of whether the next frame is drawn.
+    var producesPreviewFrames: Bool
+
+    /// Media time reached, republished a few times a second rather than every frame.
+    ///
+    /// `currentFrameTime` moves on every frame, so a progress view reading it would
+    /// redraw thirty times a second — exactly the cost that not watching is meant to
+    /// avoid. This is the same number, coarsened to what a progress bar can show.
+    private(set) var analysedTime: Double = 0
+
+    /// How much media time passes between progress updates.
+    private static let progressInterval: Double = 0.25
+
+    /// Called after each frame is analysed, with its presentation time. Lets a caller
+    /// report progress without polling across threads.
+    var onFrameProcessed: ((Double?) -> Void)?
+
     private init(videoAsset: AVAsset,
                  videoTrack: AVAssetTrack,
                  videoReader: AVAssetReader,
@@ -54,7 +82,9 @@ class VideoProcessor {
                  firstFrame: Image?,
                  preferredTransform: CGAffineTransform,
                  orientation: CGImagePropertyOrientation,
-                 trackSize: CGSize) {
+                 trackSize: CGSize,
+                 nominalFrameRate: Float,
+                 producesPreviewFrames: Bool) {
         print("DEBUG: PROCESSER CREATED")
             self.videoAsset = videoAsset
             self.videoTrack = videoTrack
@@ -64,6 +94,8 @@ class VideoProcessor {
             self.preferredTransform = preferredTransform
             self.orientation = orientation
             self.trackSize = trackSize
+            self.nominalFrameRate = nominalFrameRate
+            self.producesPreviewFrames = producesPreviewFrames
         }
     
     deinit {
@@ -81,7 +113,16 @@ class VideoProcessor {
         VideoLayout.orientedSize(trackSize, orientation: orientation)
     }
     
-    static func create(videoAsset: AVURLAsset) async throws -> VideoProcessor {
+    /// - Parameters:
+    ///   - timeRange: restricts the reader to part of the clip. Used to analyse a single
+    ///     marked section rather than the whole video.
+    ///   - producesPreviewFrames: false skips decoding each frame to an image, for a pass
+    ///     nobody is watching.
+    static func create(
+        videoAsset: AVAsset,
+        timeRange: CMTimeRange? = nil,
+        producesPreviewFrames: Bool = true
+    ) async throws -> VideoProcessor {
         let _ = try await videoAsset.load(.isPlayable)
         
         let tracks = try await videoAsset.loadTracks(withMediaType: .video)
@@ -92,7 +133,11 @@ class VideoProcessor {
         
         let trackSize = try await videoTrack.load(.naturalSize)
         let preferredTransform = try await videoTrack.load(.preferredTransform)
-        var orientation: CGImagePropertyOrientation = .up
+        let frameRate = (try? await videoTrack.load(.nominalFrameRate)) ?? 30
+
+        // Read from the transform, not from a decoded frame — a ranged pass may not want
+        // to spend a frame on a preview it will never show.
+        let orientation = Self.orientation(from: preferredTransform)
         
         let videoReader = try AVAssetReader(asset: videoAsset)
         let outputSetting = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
@@ -103,28 +148,19 @@ class VideoProcessor {
             throw VideoError.loading
         }
         videoReader.add(videoAssetReaderOutput)
+
+        // Must be set before reading starts.
+        if let timeRange { videoReader.timeRange = timeRange }
+
         videoReader.startReading()
         
         var firstFrame: Image? = nil
-        if let sampleBuffer = videoAssetReaderOutput.copyNextSampleBuffer(),
+        if producesPreviewFrames,
+           let sampleBuffer = videoAssetReaderOutput.copyNextSampleBuffer(),
            let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-            
+
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            
-            switch (preferredTransform.a, preferredTransform.b, preferredTransform.c, preferredTransform.d) {
-            case (0, 1, -1, 0):
-                orientation = .right
-            case (0, -1, 1, 0):
-                orientation = .left
-            case (1, 0, 0, 1):
-                orientation = .up
-            case (-1, 0, 0, -1):
-                orientation = .down
-            default:
-                orientation = .up
-            }
-            let corrected = ciImage.oriented(orientation)
-            firstFrame = corrected.image
+            firstFrame = ciImage.oriented(orientation).image
         }
         
         return VideoProcessor(
@@ -135,8 +171,20 @@ class VideoProcessor {
             firstFrame: firstFrame,
             preferredTransform: preferredTransform,
             orientation: orientation,
-            trackSize: trackSize
+            trackSize: trackSize,
+            nominalFrameRate: frameRate,
+            producesPreviewFrames: producesPreviewFrames
         )
+    }
+
+    /// The orientation a track's preferred transform describes.
+    static func orientation(from transform: CGAffineTransform) -> CGImagePropertyOrientation {
+        switch (transform.a, transform.b, transform.c, transform.d) {
+        case (0, 1, -1, 0): return .right
+        case (0, -1, 1, 0): return .left
+        case (-1, 0, 0, -1): return .down
+        default: return .up
+        }
     }
     
     
@@ -177,9 +225,16 @@ class VideoProcessor {
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         currentFrameTime = presentationTime.isValid ? presentationTime.seconds : nil
 
-        let ciImage = CIImage(cvPixelBuffer: buff)
-        currentFrame = ciImage.oriented(orientation).image
-        
+        if let time = currentFrameTime,
+           time - analysedTime >= Self.progressInterval || time < analysedTime {
+            analysedTime = time
+        }
+
+        if producesPreviewFrames {
+            let ciImage = CIImage(cvPixelBuffer: buff)
+            currentFrame = ciImage.oriented(orientation).image
+        }
+
         CMSampleBufferInvalidate(sampleBuffer)
         return buff
     }
@@ -205,6 +260,8 @@ class VideoProcessor {
                     } else {
                         try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
                     }
+
+                    onFrameProcessed?(currentFrameTime)
                 }
             }
         } catch {

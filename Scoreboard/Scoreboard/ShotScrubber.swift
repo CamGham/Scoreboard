@@ -446,15 +446,18 @@ struct ShotScrubber: View {
         to time: Double
     ) -> ClosedRange<Double> {
 
+        // Every bound is clamped against the other before the range is built: a
+        // `ClosedRange` traps rather than correcting itself, so an inverted one is a
+        // crash, not a glitch.
         let gap = ReanalysisSection.minimumDuration
 
         switch edge {
         case .start:
             let start = max(0, min(time, range.upperBound - gap))
-            return start...range.upperBound
+            return min(start, range.upperBound)...range.upperBound
         case .end:
             let end = min(duration, max(time, range.lowerBound + gap))
-            return range.lowerBound...end
+            return range.lowerBound...max(end, range.lowerBound)
         }
     }
 

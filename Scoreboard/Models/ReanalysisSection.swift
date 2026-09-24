@@ -54,9 +54,10 @@ struct ReanalysisSection: Codable, Identifiable, Equatable {
         let limit = clipDuration > 0 ? clipDuration : range.upperBound
         let minimum = min(minimumDuration, limit)
 
+        // A `ClosedRange` is ordered by construction, so only the clip's bounds and the
+        // minimum length are in question here.
         var start = min(max(range.lowerBound, 0), limit)
         var end = min(max(range.upperBound, 0), limit)
-        if end < start { swap(&start, &end) }
 
         // Grow a too-short range rather than rejecting it — the user pointed at a moment,
         // and pushing back on the exact length would be pedantic. Prefer to extend

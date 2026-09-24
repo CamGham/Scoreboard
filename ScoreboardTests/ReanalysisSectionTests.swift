@@ -21,14 +21,6 @@ func sectionStaysInsideTheClip() {
     #expect(fitted.upperBound == clip)
 }
 
-@Test("A range dragged backwards still reads start to end")
-func invertedRangeIsRighted() {
-    let fitted = ReanalysisSection.normalised(40...20, clipDuration: clip)
-
-    #expect(fitted.lowerBound == 20)
-    #expect(fitted.upperBound == 40)
-}
-
 @Test("A too-short mark is grown rather than rejected")
 func shortSectionIsGrown() {
     let fitted = ReanalysisSection.normalised(10...10.1, clipDuration: clip)

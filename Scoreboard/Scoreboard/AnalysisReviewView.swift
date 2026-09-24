@@ -38,6 +38,20 @@ struct AnalysisReviewView: View {
     /// stored shouldn't offer to take them.
     var onSectionsChanged: (([ReanalysisSection]) -> Void)?
 
+    /// Parts of the frame where a ball sighting is ignored. Applied to any re-analysis
+    /// run from here — and the reason running one again can change the answer.
+    var exclusions: [ExclusionZone] = []
+
+    var onExclusionsChanged: (([ExclusionZone]) -> Void)?
+
+    /// The scoring plane re-analysis should judge against. Falls back to the rim the
+    /// existing attempts were judged with; without either there is nothing to detect
+    /// against and re-analysis stays unavailable.
+    var rim: HoopGeometry?
+
+    /// Called once a re-analysis has changed the timeline, so the caller can save the run.
+    var onAttemptsMerged: (() -> Void)?
+
     @State private var player: AnalysisReviewPlayer?
     @State private var showsChrome = true
     @State private var showTimeline = false
@@ -47,6 +61,16 @@ struct AnalysisReviewView: View {
     @State private var draftRange: ClosedRange<Double>?
 
     @State private var showSections = false
+
+    @State private var reanalyser = SectionReanalyser()
+
+    /// The still the zone editor is drawn on, and whether it is up.
+    @State private var zoneBackdrop: IdentifiedImage?
+    @State private var isLoadingBackdrop = false
+
+    /// Whether the next re-analysis is watched. Remembered across runs and videos: it is
+    /// a working preference — "I trust this setup" — not a property of one clip.
+    @AppStorage("watchesReanalysis") private var watchesReanalysis = false
 
     private static let rates: [Float] = [0.25, 0.5, 1.0, 2.0]
 
@@ -58,14 +82,22 @@ struct AnalysisReviewView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            videoStage.ignoresSafeArea()
+            if let processor = watchedProcessor {
+                // The review chrome describes a finished clip. While the detector is
+                // part-way through rewriting a window of it, none of it can be trusted
+                // or acted on, so it gets out of the way entirely.
+                reanalysisStage(processor)
+            } else {
+                videoStage.ignoresSafeArea()
 
-            // Chrome respects the safe area so the close button clears the notch and the
-            // scrubber clears the home indicator; only the gradients bleed to the edges.
-            VStack(spacing: 0) {
-                if showsChrome { topBar }
-                Spacer(minLength: 0)
-                if showsChrome { controls }
+                // Chrome respects the safe area so the close button clears the notch and
+                // the scrubber clears the home indicator; only the gradients bleed to the
+                // edges.
+                VStack(spacing: 0) {
+                    if showsChrome { topBar }
+                    Spacer(minLength: 0)
+                    if showsChrome { controls }
+                }
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showsChrome)
@@ -83,9 +115,24 @@ struct AnalysisReviewView: View {
             player?.stop()
             player = nil
         }
+        .fullScreenCover(item: $zoneBackdrop) { backdrop in
+            ExclusionZoneEditorView(
+                backdrop: backdrop.image,
+                initialZones: exclusions,
+                onCancel: { zoneBackdrop = nil },
+                onConfirm: { zones in
+                    onExclusionsChanged?(zones)
+                    zoneBackdrop = nil
+                }
+            )
+        }
         .sheet(isPresented: $showSections) {
             ReanalysisSectionsView(
                 sections: sections,
+                reanalyser: reanalyser,
+                blockedReason: reanalysisBlockedReason,
+                watches: $watchesReanalysis,
+                onReanalyse: { runReanalysis() },
                 onJump: { section in
                     showSections = false
                     player?.jump(to: section.startTime)
@@ -177,6 +224,88 @@ struct AnalysisReviewView: View {
         }
     }
 
+    // MARK: Watching a re-analysis
+
+    /// The processor to draw, when a pass is running and being watched.
+    private var watchedProcessor: VideoProcessor? {
+        reanalyser.isWatching ? reanalyser.activeProcessor : nil
+    }
+
+    /// The screen while a re-analysis is being watched.
+    ///
+    /// Deliberately the first pass's screen: the frames, what the detector sees in them,
+    /// and how far there is to go. That is the same set of questions watching an analysis
+    /// answers, and the reason to watch one at all.
+    private func reanalysisStage(_ processor: VideoProcessor) -> some View {
+        ZStack {
+            Group {
+                if let frame = processor.currentFrame {
+                    frame
+                        .resizable()
+                        .scaledToFit()
+                        // The overlay goes on before the frame is expanded: it lays its
+                        // boxes out against whatever size it is given, so it has to be
+                        // given the picture's size rather than the screen's.
+                        .overlay { DetectionOverlayView(processor: processor) }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Color.black.overlay { ProgressView().tint(.white) }
+                }
+            }
+            .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                reanalysisControls
+            }
+        }
+    }
+
+    /// Which window is being redone, how far through it is, and the way out.
+    private var reanalysisControls: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.clockwise")
+                    .symbolEffect(.pulse)
+
+                Text(runningLabel)
+
+                Spacer(minLength: 8)
+
+                if reanalyser.totalSections > 1 {
+                    Text("\(min(reanalyser.completedSections + 1, reanalyser.totalSections)) of \(reanalyser.totalSections)")
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+
+                Text(reanalyser.progress, format: .percent.precision(.fractionLength(0)))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.white)
+
+            ProgressView(value: reanalyser.overallProgress)
+                .tint(.white)
+
+            // Stopping watching leaves the pass running: it goes back to the review
+            // screen, where the strip under the scrubber carries the same progress.
+            chip("Stop watching", systemImage: "eye.slash", tint: .white.opacity(0.14)) {
+                watchesReanalysis = false
+                reanalyser.setWatching(false)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 8)
+        .background {
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.7)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+        }
+    }
+
     // MARK: Top bar
 
     private var topBar: some View {
@@ -187,6 +316,9 @@ struct AnalysisReviewView: View {
                     .padding(9)
                     .background(.ultraThinMaterial, in: Circle())
             }
+            // Leaving mid-pass would hide a run the user can't get back to.
+            .disabled(reanalyser.isRunning)
+            .opacity(reanalyser.isRunning ? 0.4 : 1)
 
             Spacer()
 
@@ -468,10 +600,44 @@ struct AnalysisReviewView: View {
                     save(draftRange, clipDuration: player.duration)
                 }
             }
+        } else if reanalyser.isRunning {
+            HStack(spacing: 10) {
+                ProgressView(value: reanalyser.overallProgress)
+                    .tint(.blue)
+
+                Text(runningLabel)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.8))
+
+                // Switchable mid-pass, the same as the first analysis: stop watching and
+                // the frames stop being drawn for it.
+                iconChip(
+                    reanalyser.isWatching ? "eye.slash" : "eye",
+                    hint: reanalyser.isWatching ? "Stop watching" : "Watch the re-analysis"
+                ) {
+                    watchesReanalysis.toggle()
+                    reanalyser.setWatching(watchesReanalysis)
+                }
+
+                iconChip("rectangle.stack", hint: "Marked sections") {
+                    showSections = true
+                }
+            }
         } else {
             HStack(spacing: 10) {
                 chip("Mark section", systemImage: "scissors", tint: .white.opacity(0.14)) {
                     beginMarking(player)
+                }
+
+                if onExclusionsChanged != nil, frameProvider != nil {
+                    chip(
+                        exclusions.isEmpty ? "Block area" : "Blocked \(exclusions.count)",
+                        systemImage: "nosign",
+                        tint: exclusions.isEmpty ? .white.opacity(0.14) : .red.opacity(0.3)
+                    ) {
+                        openZoneEditor(player)
+                    }
+                    .disabled(isLoadingBackdrop)
                 }
 
                 Spacer(minLength: 8)
@@ -488,6 +654,24 @@ struct AnalysisReviewView: View {
                 }
             }
         }
+    }
+
+    /// The running row has a progress bar and a timecode competing for the same line, so
+    /// its buttons carry the icon alone.
+    private func iconChip(
+        _ systemImage: String,
+        hint: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+                .frame(width: 34, height: 32)
+                .background(.white.opacity(0.14), in: Capsule())
+                .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(hint)
     }
 
     private func chip(
@@ -538,6 +722,81 @@ struct AnalysisReviewView: View {
 
     private var markedDuration: Double {
         sections.reduce(0) { $0 + $1.duration }
+    }
+
+    private var runningLabel: String {
+        guard let section = reanalyser.activeSection else { return "Re-analysing…" }
+        return "Re-analysing \(ShotScrubber.timecode(section.startTime))–\(ShotScrubber.timecode(section.endTime))"
+    }
+
+    // MARK: Blocked areas
+
+    /// Open the editor on the frame the user is looking at — the one that presumably has
+    /// the offending object in it.
+    private func openZoneEditor(_ player: AnalysisReviewPlayer) {
+        guard let frameProvider, !isLoadingBackdrop else { return }
+
+        player.pause()
+        isLoadingBackdrop = true
+
+        Task {
+            let still = await frameProvider.image(at: player.currentTime)
+            isLoadingBackdrop = false
+            if let still { zoneBackdrop = IdentifiedImage(image: still) }
+        }
+    }
+
+    // MARK: Re-analysis
+
+    /// The rim the re-analysis will judge against: whatever this session knows, else the
+    /// one the existing attempts were judged with.
+    private var resolvedRim: HoopGeometry? {
+        rim ?? gameState.rim ?? gameState.reviewableAttempts.compactMap(\.rim).last
+    }
+
+    /// Why the button can't be pressed, or nil when it can.
+    private var reanalysisBlockedReason: String? {
+        if sections.isEmpty { return "Mark a section first." }
+        if resolvedRim == nil {
+            return "No rim is known for this video, so there is nothing to judge a shot against. Place the rim, then re-analyse."
+        }
+        return nil
+    }
+
+    private func runReanalysis() {
+        guard let rim = resolvedRim, !sections.isEmpty, !reanalyser.isRunning else { return }
+
+        player?.pause()
+
+        let queue = sections
+        var finished: [UUID] = []
+
+        // Watching means the frames are the point, so the list that started the run
+        // steps aside for them.
+        if watchesReanalysis { showSections = false }
+
+        Task {
+            await reanalyser.run(
+                sections: queue,
+                asset: asset,
+                rim: rim,
+                exclusions: exclusions,
+                watching: watchesReanalysis,
+                merge: { section, attempts in
+                    gameState.replaceAttempts(in: section.range, with: attempts)
+                },
+                onSectionFinished: { section in
+                    // Clear each mark as it is dealt with, so an interrupted run leaves
+                    // exactly the sections it never got to.
+                    finished.append(section.id)
+                    onSectionsChanged?(queue.filter { !finished.contains($0.id) })
+                }
+            )
+
+            if (reanalyser.summary?.sections ?? 0) > 0 {
+                onAttemptsMerged?()
+            }
+        }
     }
 
     // MARK: Shot navigation

@@ -98,6 +98,13 @@ final class BallDetector {
         self.config = config
     }
 
+    /// Parts of the frame whose sightings are thrown away. See `ExclusionZone` — and
+    /// note the fixed-camera assumption it documents.
+    ///
+    /// Applied here rather than only at the tracker, so a decoy can't drag the moving
+    /// crop onto itself and keep the real ball out of frame for the next prediction.
+    var exclusionZones: [ExclusionZone] = []
+
     func reset() {
         consecutiveMisses = 0
         stats = BallDetectionStats()
@@ -144,6 +151,17 @@ final class BallDetector {
         let candidates = (request.results as? [VNRecognizedObjectObservation] ?? [])
             .filter { $0.labels.first?.identifier == ObjectType.ball.rawValue }
             .filter { $0.confidence >= threshold }
+            .filter { candidate in
+                guard !exclusionZones.isEmpty else { return true }
+
+                // Candidates inside a crop are in the crop's own coordinates, so they
+                // have to be put back on the full frame before a zone means anything.
+                let box = roi.map {
+                    BallROIPredictor.mapToFullFrame(roiRelative: candidate.boundingBox, roi: $0)
+                } ?? candidate.boundingBox
+
+                return !exclusionZones.exclude(boundingBox: box)
+            }
 
         guard let chosen = pick(from: candidates, roi: roi, predictedCentre: predictedCentre) else {
             consecutiveMisses += 1

@@ -53,6 +53,25 @@ struct VideoView: View {
     /// Shown the moment the last frame has been analysed. The processing view is a tuning
     /// instrument; this is what the result is actually for.
     @State var showAnalysisReview = false
+
+    /// Whether the frames are being drawn as they are analysed.
+    ///
+    /// Watching is how a rim in the wrong place or a ball going undetected gets spotted,
+    /// so it stays the offered default — but it costs a decoded image and a full redraw
+    /// per frame, and once a clip's setup is known to be right that is pure waiting.
+    @State var showsPreview = true
+
+    /// False until the user has picked how to run this pass.
+    @State var hasStartedAnalysis = false
+
+    /// When the pass started, for the rate the progress view reports.
+    @State var analysisStartedAt: Date?
+
+    /// Length of the clip, for progress. Zero until it loads.
+    @State var clipDuration: Double = 0
+
+    /// Whether the blocked-area editor is up, drawn on the frame on screen.
+    @State var showZoneEditor = false
     var body: some View {
         VStack {
             switch assetState {
@@ -80,227 +99,113 @@ struct VideoView: View {
                 ProgressView("Loading...")
             case .ready:
                 if let videoProcessor, let currentFrame = videoProcessor.currentFrame {
-                    currentFrame
-                        .resizable()
-                        .scaledToFit()
-                        .overlay {
-                            GeometryReader { geometry in
-                                ForEach(videoProcessor.tracker.rects) { rectData in
-                                    let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                                    Rectangle()
-                                        .stroke(rectData.colour, lineWidth: 2)
-                                        .frame(width: adjustedRect.width, height: adjustedRect.height)
-                                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
-
-                                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                                        .foregroundColor(.red)
-                                }
-                                ForEach(videoProcessor.tracker.trackedRects) { rectData in
-                                    let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                                    Rectangle()
-                                        .stroke(rectData.colour, lineWidth: 2)
-                                        .frame(width: adjustedRect.width, height: adjustedRect.height)
-                                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
-                                    
-                                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                                        .foregroundColor(.red)
-                                }
-                                let gameState = videoProcessor.tracker.gameState
-
-                                // The ball is detected rather than tracked, so it is
-                                // drawn from its own sighting instead of the track list.
-                                if let ball = videoProcessor.tracker.ballRect {
-                                    let adjusted = adjustRectForView(rect: ball.rect, viewSize: geometry.size)
-                                    Rectangle()
-                                        .stroke(ball.colour, lineWidth: 2)
-                                        .frame(width: adjusted.width, height: adjusted.height)
-                                        .position(x: adjusted.midX, y: adjusted.midY)
-                                }
-
-                                // Live ball position. `center` is a true centre now, so
-                                // the circle is built symmetrically around it.
-                                if let currentBall = gameState.ballHistory.last {
-                                    let ballRect = CGRect(
-                                        x: currentBall.center.x - currentBall.radius,
-                                        y: currentBall.center.y - currentBall.radius,
-                                        width: currentBall.radius * 2,
-                                        height: currentBall.radius * 2
-                                    )
-                                    let adjustedRect = adjustRectForView(rect: ballRect, viewSize: geometry.size)
-                                    Circle()
-                                        .stroke(.white, lineWidth: 2)
-                                        .frame(width: adjustedRect.width, height: adjustedRect.height)
-                                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
-                                }
-
-                                // Fitted arc, drawn only while a shot is live.
-                                if !gameState.arcPoints.isEmpty {
-                                    Path { path in
-                                        let points = gameState.arcPoints.map {
-                                            normalizedToView($0, viewSize: geometry.size)
-                                        }
-                                        guard let first = points.first else { return }
-                                        path.move(to: first)
-                                        for point in points.dropFirst() {
-                                            path.addLine(to: point)
-                                        }
-                                    }
-                                    .stroke(Color.yellow, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                                }
-
-                                // The scoring plane the make/miss verdict is measured against.
-                                if let hoopGeometry = gameState.rim {
-                                    let ellipseRect = adjustedEllipseFrame(
-                                        center: hoopGeometry.center,
-                                        radiusX: hoopGeometry.horizontalRadius,
-                                        radiusY: hoopGeometry.verticalRadius,
-                                        viewSize: geometry.size
-                                    )
-
-                                    Path { path in
-                                        path.addEllipse(in: ellipseRect)
-                                    }
-                                    .stroke(Color.orange, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-
-                                    Path { path in
-                                        let y = (1 - hoopGeometry.scoringPlaneY) * geometry.size.height
-                                        path.move(to: CGPoint(x: hoopGeometry.leftX * geometry.size.width, y: y))
-                                        path.addLine(to: CGPoint(x: hoopGeometry.rightX * geometry.size.width, y: y))
-                                    }
-                                    .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
-                                }
-
-                                LiveShotReadout(gameState: gameState)
-                                    .position(x: geometry.size.width / 2, y: 40)
-
-                                if let hoop = videoProcessor.tracker.hoop.first {
-                                    let adjustedRect = adjustRectForView(rect: hoop.rect, viewSize: geometry.size)
-                                    Rectangle()
-                                        .stroke(hoop.colour, lineWidth: 2)
-                                        .frame(width: adjustedRect.width, height: adjustedRect.height)
-                                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
-//                                    Text("\(hoop.label) \(hoop.id)")
-//                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-//                                        .foregroundColor(.red)
-                                    Text("\(hoop.label) (\(Int(hoop.confidence * 100))%)")
-                                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                                        .foregroundColor(.red)
-                                }
-                            }
+                    Group {
+                        if showsPreview {
+                            currentFrame
+                                .resizable()
+                                .scaledToFit()
+                                .overlay { DetectionOverlayView(processor: videoProcessor) }
+                        } else {
+                            // Nothing is drawn onto the frames any more, so the numbers
+                            // stand in for them.
+                            AnalysisProgressStage(
+                                poster: currentFrame,
+                                progress: progress(for: videoProcessor),
+                                stats: videoProcessor.tracker.gameState.stats,
+                                shotsFound: videoProcessor.tracker.gameState.reviewableAttempts.count,
+                                isRunning: videoProcessor.playback == .resume,
+                                onShowPreview: { setPreview(true) }
+                            )
                         }
-                        .overlay(alignment: .top) {
-                            if videoProcessor.tracker.gameState.rim == nil {
-                                RimMissingBanner {
-                                    showRimPlacement = true
-                                }
-                                .padding(.top, 60)
-                            }
-                        }
-                        .overlay(alignment: .bottomLeading) {
-                            Button {
+                    }
+                    // Rim work needs the picture: both of these place a box on the frame,
+                    // and the banner reads state that only moves while frames are drawn.
+                    .overlay(alignment: .top) {
+                        if showsPreview, videoProcessor.tracker.gameState.rim == nil {
+                            RimMissingBanner {
                                 showRimPlacement = true
-                            } label: {
-                                Label("Rim", systemImage: "scope")
-                                    .labelStyle(.iconOnly)
                             }
-                            .buttonStyle(.bordered)
-                            .buttonBorderShape(.circle)
+                            .padding(.top, 60)
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        if showsPreview {
+                            HStack(spacing: 8) {
+                                Button {
+                                    showRimPlacement = true
+                                } label: {
+                                    Label("Rim", systemImage: "scope")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.bordered)
+                                .buttonBorderShape(.circle)
+
+                                // Watching is when a bin or a sign being read as the ball
+                                // is actually noticed, so the fix is offered right here.
+                                Button {
+                                    withAnimation { videoProcessor.playback = .pause }
+                                    showZoneEditor = true
+                                } label: {
+                                    Label("Block area", systemImage: "nosign")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.bordered)
+                                .buttonBorderShape(.circle)
+                                .tint(truth?.exclusions.isEmpty == false ? .red : nil)
+                            }
                             .padding()
                         }
-                        .overlay(alignment: .bottom, content: {
-                            HStack {
-                                Spacer()
-                                if #available(iOS 26.0, *) {
-                                    Button {
-                                        showHistory.toggle()
-                                    } label: {
-                                        Image(systemName: "list.clipboard")
-                                    }
-                                    .buttonStyle(.glass)
-                                    .padding()
-                                    
-                                } else {
-                                    Button {
-                                        showHistory.toggle()
-                                    } label: {
-                                        Image(systemName: "list.clipboard")
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .padding()
-                                }
+                    }
+                    .overlay(alignment: .bottom) {
+                        HStack {
+                            Spacer()
+                            chromeButton {
+                                showHistory.toggle()
+                            } label: {
+                                Image(systemName: "list.clipboard")
                             }
-                        })
-                        .overlay(alignment: .bottom) {
-                            HStack {
-                                if #available(iOS 26.0, *) {
-                                    Button {
-                                        if videoProcessor.playback == .pause {
-                                            withAnimation {
-                                                videoProcessor.playback = .resume
-                                            }
-                                            Task.detached(priority: .userInitiated) {
-                                                await videoProcessor.play()
-                                            }
-                                        } else {
-                                            withAnimation {
-                                                videoProcessor.playback = .pause
-                                            }
-                                        }
-                                    } label: {
-                                        Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
-                                    }
-                                    .buttonStyle(.glass)
-                                    .buttonBorderShape(.circle)
-                                    .contentTransition(.symbolEffect(.replace))
-                                    .padding(.bottom)
-                                } else {
-                                    Button {
-                                        if videoProcessor.playback == .pause {
-                                            withAnimation {
-                                                videoProcessor.playback = .resume
-                                            }
-                                            Task.detached(priority: .userInitiated) {
-                                                await videoProcessor.play()
-                                            }
-                                        } else {
-                                            withAnimation {
-                                                videoProcessor.playback = .pause
-                                            }
-                                        }
-                                    } label: {
-                                        Image(systemName: videoProcessor.playback == PlaybackState.pause ? "play.fill" : "pause.fill")
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .buttonBorderShape(.circle)
-                                    .contentTransition(.symbolEffect(.replace))
-                                    .padding(.bottom)
-                                }
-                                
-                                if #available(iOS 26.0, *) {
-                                    Button {
-                                        Task {
-                                            await videoProcessor.next()
-                                        }
-                                    } label: {
-                                        Text("next")
-                                    }
-                                    .buttonStyle(.glass)
-                                    .padding(.bottom)
-                                } else {
-                                    Button {
-                                        Task {
-                                            await videoProcessor.next()
-                                        }
-                                    } label: {
-                                        Text("next")
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .padding(.bottom)
-                                }
-                            }
+                            .padding()
                         }
+                    }
+                    .overlay(alignment: .bottom) {
+                        if hasStartedAnalysis {
+                            HStack {
+                                chromeButton(circular: true) {
+                                    togglePlayback(videoProcessor)
+                                } label: {
+                                    Image(systemName: videoProcessor.playback == .pause ? "play.fill" : "pause.fill")
+                                }
+                                .contentTransition(.symbolEffect(.replace))
+
+                                // Switchable mid-pass: watching costs a redraw a frame,
+                                // and the moment you stop needing to see it, you stop
+                                // paying for it.
+                                chromeButton(circular: true) {
+                                    setPreview(!showsPreview)
+                                } label: {
+                                    Image(systemName: showsPreview ? "eye.slash" : "eye")
+                                }
+                                .contentTransition(.symbolEffect(.replace))
+
+                                chromeButton {
+                                    Task { await videoProcessor.next() }
+                                } label: {
+                                    Text("next")
+                                }
+                            }
+                            .padding(.bottom)
+                        }
+                    }
+                    .overlay {
+                        if !hasStartedAnalysis {
+                            AnalysisStartCard(
+                                clipDuration: clipDuration,
+                                hasRim: videoProcessor.tracker.gameState.rim != nil,
+                                onWatch: { startAnalysis(watching: true) },
+                                onRunWithoutWatching: { startAnalysis(watching: false) }
+                            )
+                        }
+                    }
                 }
             }
             
@@ -349,6 +254,12 @@ struct VideoView: View {
                 videoProcessor = processor
                 frameProvider = ShotFrameProvider(asset: asset)
 
+                // Progress is measured against this; without it the panel can only count
+                // upwards with no idea of how far there is to go.
+                clipDuration = ((try? await asset.load(.duration))?.seconds).flatMap {
+                    $0.isFinite ? $0 : nil
+                } ?? 0
+
                 // Load anything the user has already told us about this video. A saved
                 // rim means they never have to place it twice, and saved rulings are
                 // reapplied to attempts as they are detected.
@@ -363,6 +274,10 @@ struct VideoView: View {
                     let stored = store.loadTruth(for: assetIdentifier)
                     truth = stored
                     plan = store.loadPlan(for: assetIdentifier)
+
+                    // Applied before a single frame is read: a zone the user drew on an
+                    // earlier pass is knowledge about this video, not about that run.
+                    processor.tracker.setExclusionZones(stored.exclusions)
                     processor.tracker.gameState.applyStoredTruth(stored.shots)
 
                     if let savedRim = stored.rim {
@@ -405,6 +320,19 @@ struct VideoView: View {
         } message: {
             Text(existingAnalysisMessage)
         }
+        .fullScreenCover(isPresented: $showZoneEditor) {
+            if let frame = videoProcessor?.currentFrame {
+                ExclusionZoneEditorView(
+                    backdrop: frame,
+                    initialZones: truth?.exclusions ?? [],
+                    onCancel: { showZoneEditor = false },
+                    onConfirm: { zones in
+                        saveExclusions(zones)
+                        showZoneEditor = false
+                    }
+                )
+            }
+        }
         .sheet(isPresented: $showRimPlacement) {
             if let videoProcessor, let frame = videoProcessor.currentFrame {
                 RimPlacementView(
@@ -441,7 +369,11 @@ struct VideoView: View {
                     sections: plan?.sections ?? [],
                     // No identifier means nowhere to write marks, so don't offer to take
                     // them — a mark that silently evaporates is worse than none.
-                    onSectionsChanged: assetIdentifier == nil ? nil : { saveSections($0) }
+                    onSectionsChanged: assetIdentifier == nil ? nil : { saveSections($0) },
+                    exclusions: truth?.exclusions ?? [],
+                    onExclusionsChanged: assetIdentifier == nil ? nil : { saveExclusions($0) },
+                    rim: videoProcessor.tracker.gameState.rim ?? truth?.rim,
+                    onAttemptsMerged: { saveRun() }
                 )
             }
         }
@@ -459,10 +391,70 @@ struct VideoView: View {
         }
     }
 
-    /// Normalized Vision point (origin bottom-left, y up) to SwiftUI view point.
-    func normalizedToView(_ point: CGPoint, viewSize: CGSize) -> CGPoint {
-        CGPoint(x: point.x * viewSize.width, y: (1 - point.y) * viewSize.height)
+    /// How the pass is going, in media time against wall-clock time.
+    func progress(for videoProcessor: VideoProcessor) -> AnalysisProgress {
+        AnalysisProgress(
+            analysedSeconds: videoProcessor.analysedTime,
+            clipSeconds: clipDuration,
+            elapsedSeconds: analysisStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        )
     }
+
+    /// Start the pass the way the user asked for it.
+    func startAnalysis(watching: Bool) {
+        guard let videoProcessor else { return }
+
+        hasStartedAnalysis = true
+        setPreview(watching)
+        resume(videoProcessor)
+    }
+
+    func togglePlayback(_ videoProcessor: VideoProcessor) {
+        if videoProcessor.playback == .pause {
+            resume(videoProcessor)
+        } else {
+            withAnimation { videoProcessor.playback = .pause }
+        }
+    }
+
+    /// The bottom-bar buttons, in whichever material this OS has.
+    ///
+    /// One place for the availability split: it was previously written out per button,
+    /// which meant every new control arrived as two near-identical copies.
+    @ViewBuilder
+    func chromeButton<Label: View>(
+        circular: Bool = false,
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        if #available(iOS 26.0, *) {
+            Button(action: action, label: label)
+                .buttonStyle(.glass)
+                .buttonBorderShape(circular ? .circle : .roundedRectangle)
+        } else {
+            Button(action: action, label: label)
+                .buttonStyle(.bordered)
+                .buttonBorderShape(circular ? .circle : .roundedRectangle)
+        }
+    }
+
+    func setPreview(_ isOn: Bool) {
+        showsPreview = isOn
+        videoProcessor?.producesPreviewFrames = isOn
+    }
+
+    func resume(_ videoProcessor: VideoProcessor) {
+        // The clock starts at the first resume and keeps running across pauses, so the
+        // rate shown is the rate of the whole pass rather than of the last burst.
+        if analysisStartedAt == nil { analysisStartedAt = Date() }
+
+        withAnimation { videoProcessor.playback = .resume }
+
+        Task.detached(priority: .userInitiated) {
+            await videoProcessor.play()
+        }
+    }
+
 
     var existingAnalysisMessage: String {
         let count = existingRuns.count
@@ -534,6 +526,22 @@ struct VideoView: View {
         try? store.savePlan(document)
     }
 
+    /// Persist blocked-out areas, and apply them to the pass in progress.
+    ///
+    /// Live rather than only on the next run: the frames already analysed keep whatever
+    /// they found, but from here on the decoy is ignored.
+    func saveExclusions(_ zones: [ExclusionZone]) {
+        guard let assetIdentifier else { return }
+
+        var document = truth ?? GroundTruthDocument(assetIdentifier: assetIdentifier)
+        document.exclusions = zones
+
+        truth = document
+        try? store.saveTruth(document)
+
+        videoProcessor?.tracker.setExclusionZones(zones)
+    }
+
     func saveRim(_ geometry: HoopGeometry) {
         guard let assetIdentifier else { return }
 
@@ -544,29 +552,7 @@ struct VideoView: View {
         try? store.saveTruth(document)
     }
 
-    func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
-        
-        let width = rect.width * viewSize.width
-        let height = rect.height * viewSize.height
-        
-        let x = rect.origin.x * viewSize.width
-        let y = (1 - rect.origin.y - rect.height) * viewSize.height
-        return CGRect(x: x, y: y, width: width, height: height)
-        
-//        let scale = CGAffineTransform.identity.scaledBy(x: viewSize.width, y: viewSize.height)
-//        let transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -viewSize.height)
-//        return rect.applying(scale).applying(transform)
-    }
     
-    // Adjust a normalized ellipse (center in 0..1 space, radii normalized) to view coordinates, returning a CGRect centered at the correct point.
-    // Rotation, if needed, should be applied by the caller as a transform to a path.
-    func adjustedEllipseFrame(center: CGPoint, radiusX: CGFloat, radiusY: CGFloat, viewSize: CGSize) -> CGRect {
-        let cx = center.x * viewSize.width
-        let cy = (1 - center.y) * viewSize.height // flip Y to match image space used elsewhere
-        let rx = radiusX * viewSize.width
-        let ry = radiusY * viewSize.height
-        return CGRect(x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2)
-    }
 }
 
 //#Preview {

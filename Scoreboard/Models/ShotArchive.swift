@@ -39,10 +39,39 @@ struct GroundTruthDocument: Codable, Equatable {
 
     var shots: [GroundTruthEntry] = []
 
-    init(assetIdentifier: String, rim: HoopGeometry? = nil, shots: [GroundTruthEntry] = []) {
+    /// Parts of the frame where a ball sighting is ignored — a bin, a sign, anything
+    /// else round and orange that isn't the ball.
+    var exclusions: [ExclusionZone] = []
+
+    init(
+        assetIdentifier: String,
+        rim: HoopGeometry? = nil,
+        shots: [GroundTruthEntry] = [],
+        exclusions: [ExclusionZone] = []
+    ) {
         self.assetIdentifier = assetIdentifier
         self.rim = rim
         self.shots = shots
+        self.exclusions = exclusions
+    }
+
+    // Decoded leniently, for the same reason `ShotDetectorConfig` is: the synthesised
+    // decoder demands every key, so adding a field here would make every previously
+    // saved document unreadable — and this is the file holding the user's corrections,
+    // the one thing in the app that cannot be regenerated.
+    private enum CodingKeys: String, CodingKey {
+        case version, assetIdentifier, rim, shots, exclusions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        version = try container.decodeIfPresent(Int.self, forKey: .version)
+            ?? GroundTruthDocument.currentVersion
+        assetIdentifier = try container.decode(String.self, forKey: .assetIdentifier)
+        rim = try container.decodeIfPresent(HoopGeometry.self, forKey: .rim)
+        shots = try container.decodeIfPresent([GroundTruthEntry].self, forKey: .shots) ?? []
+        exclusions = try container.decodeIfPresent([ExclusionZone].self, forKey: .exclusions) ?? []
     }
 }
 

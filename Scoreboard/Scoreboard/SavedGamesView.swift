@@ -185,7 +185,11 @@ struct SavedGameDetailView: View {
                     frameProvider: frameProvider,
                     ballStats: run?.ballStats,
                     sections: plan?.sections ?? [],
-                    onSectionsChanged: { saveSections($0) }
+                    onSectionsChanged: { saveSections($0) },
+                    exclusions: truth?.exclusions ?? [],
+                    onExclusionsChanged: { saveExclusions($0) },
+                    rim: truth?.rim,
+                    onAttemptsMerged: { saveMergedRun() }
                 )
             }
         }
@@ -229,7 +233,7 @@ struct SavedGameDetailView: View {
                 let transform = try? await track.load(.preferredTransform)
                 orientedVideoSize = VideoLayout.orientedSize(
                     natural ?? .zero,
-                    orientation: orientation(from: transform ?? .identity)
+                    orientation: VideoProcessor.orientation(from: transform ?? .identity)
                 )
             }
         } catch let failure as VideoLibrary.LookupFailure {
@@ -239,21 +243,38 @@ struct SavedGameDetailView: View {
         }
     }
 
+    /// Write a re-analysed timeline back over the run it came from.
+    ///
+    /// The same run rather than a new one: re-analysing a window is a correction to this
+    /// pass, not a separate attempt at the whole video, and a new run per section would
+    /// bury the comparison the run list exists for.
+    private func saveMergedRun() {
+        guard var updated = run else { return }
+
+        updated.attempts = gameState.reviewableAttempts
+        run = updated
+
+        try? store.saveRun(updated)
+        try? store.refreshSummary(
+            for: summary.assetIdentifier,
+            attempts: updated.attempts
+        )
+    }
+
+    private func saveExclusions(_ zones: [ExclusionZone]) {
+        var document = truth ?? GroundTruthDocument(assetIdentifier: summary.assetIdentifier)
+        document.exclusions = zones
+
+        truth = document
+        try? store.saveTruth(document)
+    }
+
     private func saveSections(_ updated: [ReanalysisSection]) {
         var document = plan ?? ReanalysisPlan(assetIdentifier: summary.assetIdentifier)
         document.sections = updated
 
         plan = document
         try? store.savePlan(document)
-    }
-
-    private func orientation(from transform: CGAffineTransform) -> CGImagePropertyOrientation {
-        switch (transform.a, transform.b, transform.c, transform.d) {
-        case (0, 1, -1, 0): return .right
-        case (0, -1, 1, 0): return .left
-        case (-1, 0, 0, -1): return .down
-        default: return .up
-        }
     }
 
     private func recordVerdict(_ attempt: ShotAttempt) {
