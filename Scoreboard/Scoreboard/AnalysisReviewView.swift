@@ -561,6 +561,7 @@ struct AnalysisReviewView: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .buttonRepeatBehavior(.enabled)
         .disabled(disabled)
         .opacity(disabled ? 0.35 : 1)
     }
@@ -822,12 +823,11 @@ struct AnalysisReviewView: View {
     }
 
     private func nextMarker(from time: Double) -> ShotMarker? {
-        // Measured against the window, so "next" doesn't mean the shot already playing.
-        markers.first { $0.window.lowerBound > time + 0.05 }
+        ShotMarker.next(after: time, in: markers)
     }
 
     private func previousMarker(from time: Double) -> ShotMarker? {
-        markers.last { $0.window.lowerBound < time - 0.05 }
+        ShotMarker.previous(before: time, in: markers)
     }
 }
 

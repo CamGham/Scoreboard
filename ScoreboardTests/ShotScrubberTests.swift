@@ -221,3 +221,49 @@ func landingIsShared() {
         #expect(shot.landingTime == shot.window.lowerBound)
     }
 }
+
+// MARK: - Stepping shot to shot
+
+private let threeShots = [
+    windowedMarker(at: 12),
+    windowedMarker(at: 40, ordinal: 2),
+    windowedMarker(at: 75, ordinal: 3)
+]
+
+@Test("Standing on a shot, the previous button goes to the shot before it")
+func previousFromAShotGoesBack() {
+    // The bug: landing on a shot puts the playhead on its key moment, which is *after*
+    // its own window start — so a test written against window starts picked the shot you
+    // were already standing on and the button did nothing.
+    let standingOnSecond = threeShots[1].landingTime
+
+    #expect(ShotMarker.previous(before: standingOnSecond, in: threeShots)?.ordinal == 1)
+}
+
+@Test("Standing on a shot, the next button goes to the one after it")
+func nextFromAShotGoesForward() {
+    #expect(ShotMarker.next(after: threeShots[1].landingTime, in: threeShots)?.ordinal == 3)
+}
+
+@Test("Anywhere inside a shot counts as being on it, not before it")
+func insideTheWindowStepsByShot() {
+    // In the run-up of the second shot: forward is the third shot, not this one's own
+    // crossing a moment ahead.
+    let inRunUp = threeShots[1].window.lowerBound + 0.1
+
+    #expect(ShotMarker.next(after: inRunUp, in: threeShots)?.ordinal == 3)
+    #expect(ShotMarker.previous(before: inRunUp, in: threeShots)?.ordinal == 1)
+}
+
+@Test("Between shots, the buttons take the nearest one either way")
+func betweenShotsStepsToNearest() {
+    #expect(ShotMarker.next(after: 25, in: threeShots)?.ordinal == 2)
+    #expect(ShotMarker.previous(before: 25, in: threeShots)?.ordinal == 1)
+}
+
+@Test("The ends of the clip have nowhere further to go")
+func endsOfTheClipHaveNoNeighbour() {
+    #expect(ShotMarker.previous(before: threeShots[0].landingTime, in: threeShots) == nil)
+    #expect(ShotMarker.next(after: threeShots[2].landingTime, in: threeShots) == nil)
+    #expect(ShotMarker.next(after: 5, in: [])  == nil)
+}

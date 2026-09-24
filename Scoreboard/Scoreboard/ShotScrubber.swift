@@ -106,6 +106,31 @@ struct ShotMarker: Identifiable, Equatable {
         }
     }
 
+    /// The shot before the playhead, for the shot-to-shot buttons.
+    ///
+    /// Counted in shots rather than in seconds. Inside a shot, "previous" means the one
+    /// before *it*; between shots it means the last one gone past. Measuring against
+    /// times instead was a bug worth not repeating: the test used each shot's window
+    /// start while the jump landed on its key moment, so standing on a shot satisfied its
+    /// own "is before me" test and the button jumped to where you already were.
+    static func previous(before time: Double, in markers: [ShotMarker]) -> ShotMarker? {
+        if let current = anchor(at: time, in: markers) {
+            return markers.last { $0.ordinal < current.ordinal }
+        }
+        return markers.last { $0.landingTime < time - adjacencyTolerance }
+    }
+
+    /// The shot after the playhead. The mirror of `previous(before:in:)`.
+    static func next(after time: Double, in markers: [ShotMarker]) -> ShotMarker? {
+        if let current = anchor(at: time, in: markers) {
+            return markers.first { $0.ordinal > current.ordinal }
+        }
+        return markers.first { $0.landingTime > time + adjacencyTolerance }
+    }
+
+    /// Slack so that sitting exactly on a shot doesn't count as being before or after it.
+    private static let adjacencyTolerance: Double = 0.05
+
     /// The shot the playhead is inside, if any.
     ///
     /// Overlapping windows are broken by whichever key moment is closest.
