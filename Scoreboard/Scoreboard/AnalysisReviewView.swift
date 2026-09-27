@@ -28,8 +28,6 @@ struct AnalysisReviewView: View {
     /// Supplies the still frame each timeline card is drawn on.
     var frameProvider: ShotFrameProvider?
 
-    var ballStats: BallDetectionStats?
-
     /// Stretches of the clip already flagged for another pass.
     var sections: [ReanalysisSection] = []
 
@@ -54,13 +52,18 @@ struct AnalysisReviewView: View {
 
     @State private var player: AnalysisReviewPlayer?
     @State private var showsChrome = true
-    @State private var showTimeline = false
 
     /// The section being marked. Non-nil is "marking mode": the bar edits this range
     /// instead of seeking, and the ruling bar gets out of the way.
     @State private var draftRange: ClosedRange<Double>?
 
     @State private var showSections = false
+
+    /// Compact height means landscape on a phone, where the video is wide and the chrome
+    /// is what's in the way.
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    private var isCompactHeight: Bool { verticalSizeClass == .compact }
 
     @State private var reanalyser = SectionReanalyser()
 
@@ -122,6 +125,11 @@ struct AnalysisReviewView: View {
                 onCancel: { zoneBackdrop = nil },
                 onConfirm: { zones in
                     onExclusionsChanged?(zones)
+
+                    // A pass in flight picks them up for the rest of its window; frames
+                    // already analysed keep what they found.
+                    reanalyser.applyExclusions(zones)
+
                     zoneBackdrop = nil
                 }
             )
@@ -141,15 +149,6 @@ struct AnalysisReviewView: View {
                     onSectionsChanged?(sections.filter { $0.id != section.id })
                 },
                 onDismiss: { showSections = false }
-            )
-        }
-        .sheet(isPresented: $showTimeline) {
-            ShotTimelineView(
-                gameState: gameState,
-                ballStats: ballStats,
-                frameProvider: frameProvider,
-                asset: asset,
-                orientedVideoSize: orientedVideoSize
             )
         }
     }
@@ -259,8 +258,8 @@ struct AnalysisReviewView: View {
     private var reanalysisControls: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.clockwise")
-                    .symbolEffect(.pulse)
+                Image(systemName: reanalyser.isPaused ? "pause.fill" : "arrow.clockwise")
+                    .symbolEffect(.pulse, isActive: !reanalyser.isPaused)
 
                 Text(runningLabel)
 
@@ -280,68 +279,89 @@ struct AnalysisReviewView: View {
             ProgressView(value: reanalyser.overallProgress)
                 .tint(.white)
 
-            // Stopping watching leaves the pass running: it goes back to the review
-            // screen, where the strip under the scrubber carries the same progress.
-            chip("Stop watching", systemImage: "eye.slash", tint: .white.opacity(0.14)) {
-                watchesReanalysis = false
-                reanalyser.setWatching(false)
+            // Laid out like every other control overlay: transport on its own row, with
+            // the secondary action trailing it, and the chips that change what the
+            // analysis sees on the row beneath.
+            HStack(spacing: 10) {
+                Button {
+                    reanalyser.togglePlayback()
+                } label: {
+                    Image(systemName: reanalyser.isPaused ? "play.circle.fill" : "pause.circle.fill")
+                }
+                // The same play/pause as every other screen's: holding a pass on a frame
+                // is the same act as pausing playback, and it shouldn't look like a
+                // different kind of control.
+                .buttonStyle(.chromeGlyph(size: 42))
+                .contentTransition(.symbolEffect(.replace))
+
+                Spacer(minLength: 8)
+
+                // Stopping watching leaves the pass running: it goes back to the review
+                // screen, where the strip under the scrubber carries the same progress.
+                chip("Stop watching", systemImage: "eye.slash", tint: .white.opacity(0.14)) {
+                    watchesReanalysis = false
+                    reanalyser.setWatching(false)
+                }
+            }
+
+            if onExclusionsChanged != nil {
+                HStack(spacing: 10) {
+                    chip(
+                        exclusions.isEmpty ? "Block area" : "Blocked \(exclusions.count)",
+                        systemImage: "nosign",
+                        tint: exclusions.isEmpty ? .white.opacity(0.14) : .red.opacity(0.3)
+                    ) {
+                        openZoneEditorForPass()
+                    }
+
+                    Spacer(minLength: 0)
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
         .padding(.bottom, 8)
-        .background {
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.7)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-        }
+        .chromeBarBackground()
     }
 
     // MARK: Top bar
 
     private var topBar: some View {
-        HStack(alignment: .top) {
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.footnote.weight(.bold))
-                    .padding(9)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            // Leaving mid-pass would hide a run the user can't get back to.
-            .disabled(reanalyser.isRunning)
-            .opacity(reanalyser.isRunning ? 0.4 : 1)
+        VStack(spacing: 10) {
+            topRow
 
-            Spacer()
-
-            scoreline
-
-            Spacer()
-
-            Button {
-                player?.pause()
-                showTimeline = true
-            } label: {
-                Image(systemName: "list.clipboard")
-                    .font(.footnote.weight(.bold))
-                    .padding(9)
-                    .background(.ultraThinMaterial, in: Circle())
+            // In landscape the bottom stack is most of the screen, so the shot's own
+            // scrubber moves up here — out of the picture, and sharing the top bar's
+            // gradient rather than laying a second one over the video.
+            if isCompactHeight, let player, let marker = activeMarker, player.duration > 0 {
+                detailScrubber(player: player, marker: marker, showsCaret: false)
             }
         }
-        .foregroundStyle(.white)
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 24)
-        .background {
-            LinearGradient(
-                colors: [.black.opacity(0.55), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+        .chromeTopBarBackground()
+    }
+
+    private var topRow: some View {
+        // Overlaid rather than spaced: with a button on one side only, spacers would
+        // centre the scoreline in what's left of the row rather than on the screen.
+        ZStack {
+            scoreline
+
+            HStack {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.chromeCircle)
+                // Leaving mid-pass would hide a run the user can't get back to.
+                .disabled(reanalyser.isRunning)
+                .opacity(reanalyser.isRunning ? 0.4 : 1)
+
+                Spacer()
+            }
         }
+        .foregroundStyle(.white)
     }
 
     private var scoreline: some View {
@@ -381,23 +401,19 @@ struct AnalysisReviewView: View {
                 shotReadout(player)
 
                 // Only while the playhead is inside a shot; the space is held either way
-                // so the controls don't jump as shots come and go.
-                Group {
-                    if let marker = activeMarker, player.duration > 0 {
-                        ShotWindowScrubber(
-                            marker: marker,
-                            currentTime: player.currentTime,
-                            caretFraction: marker.time / player.duration,
-                            onScrubBegan: { player.beginScrubbing() },
-                            onScrub: { player.scrub(to: $0) },
-                            onScrubEnded: { player.endScrubbing() }
-                        )
-                        .transition(.opacity)
-                    } else {
-                        Color.clear
+                // so the controls don't jump as shots come and go. In landscape it lives
+                // in the top bar instead — see `topBar`.
+                if !isCompactHeight {
+                    Group {
+                        if let marker = activeMarker, player.duration > 0 {
+                            detailScrubber(player: player, marker: marker, showsCaret: true)
+                                .transition(.opacity)
+                        } else {
+                            Color.clear
+                        }
                     }
+                    .frame(height: 40)
                 }
-                .frame(height: 40)
 
                 ShotScrubber(
                     duration: player.duration,
@@ -425,7 +441,9 @@ struct AnalysisReviewView: View {
 
                 // One job at a time: while marking, the ruling buttons would be a second
                 // set of commitments competing for the same corner of the screen.
-                if let attempt = activeAttempt, draftRange == nil {
+                //
+                // In landscape they ride in the transport row instead — see `transport`.
+                if !isCompactHeight, let attempt = activeAttempt, draftRange == nil {
                     ShotVerdictBar(attempt: attempt) { verdict in
                         gameState.setVerdict(verdict, for: attempt.id)
                     }
@@ -437,15 +455,25 @@ struct AnalysisReviewView: View {
             .padding(.horizontal, 16)
             .padding(.top, 14)
             .padding(.bottom, 8)
-            .background {
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.7)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            }
+            .chromeBarBackground()
         }
+    }
+
+    /// The shot's own scrubber. Identical in both positions bar the caret, which only
+    /// means anything while the clip-wide bar is directly beneath it.
+    private func detailScrubber(
+        player: AnalysisReviewPlayer,
+        marker: ShotMarker,
+        showsCaret: Bool
+    ) -> some View {
+        ShotWindowScrubber(
+            marker: marker,
+            currentTime: player.currentTime,
+            caretFraction: showsCaret ? marker.time / player.duration : nil,
+            onScrubBegan: { player.beginScrubbing() },
+            onScrub: { player.scrub(to: $0) },
+            onScrubEnded: { player.endScrubbing() }
+        )
     }
 
     /// The line above the bar: which shot you are on, or how many there are to find.
@@ -529,9 +557,8 @@ struct AnalysisReviewView: View {
                 player.togglePlayback()
             } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 42))
-                    .frame(width: 54, height: 44)
             }
+            .buttonStyle(.chromeGlyph(size: 42))
             .contentTransition(.symbolEffect(.replace))
 
             transportButton("forward.frame.fill") {
@@ -542,11 +569,21 @@ struct AnalysisReviewView: View {
                 jump(to: nextMarker(from: player.currentTime), player: player)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+
+            // Landscape has width to spare and no height, so the ruling buttons share
+            // this row rather than taking one of their own.
+            if isCompactHeight, let attempt = activeAttempt, draftRange == nil {
+                ShotVerdictBar(attempt: attempt, fillsWidth: true) { verdict in
+                    gameState.setVerdict(verdict, for: attempt.id)
+                }
+                .transition(.opacity)
+
+                Spacer(minLength: 8)
+            }
 
             rateButton(player)
         }
-        .font(.title3)
         .foregroundStyle(.white)
     }
 
@@ -557,10 +594,8 @@ struct AnalysisReviewView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                // A fixed hit area, so a 14pt glyph is still a 44pt target.
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
         }
+        .buttonStyle(.chromeGlyph)
         .buttonRepeatBehavior(.enabled)
         .disabled(disabled)
         .opacity(disabled ? 0.35 : 1)
@@ -679,12 +714,8 @@ struct AnalysisReviewView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.caption.weight(.semibold))
-                .frame(width: 34, height: 32)
-                .background(.white.opacity(0.14), in: Capsule())
-                .foregroundStyle(.white)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.chromeIconChip)
         .accessibilityLabel(hint)
     }
 
@@ -699,13 +730,8 @@ struct AnalysisReviewView: View {
                 if let systemImage { Image(systemName: systemImage) }
                 Text(title)
             }
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(tint, in: Capsule())
-            .foregroundStyle(.white)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.chromeChip(tint: tint))
     }
 
     /// Open a section around the current frame — or reopen the one it is already inside,
@@ -758,6 +784,17 @@ struct AnalysisReviewView: View {
             isLoadingBackdrop = false
             if let still { zoneBackdrop = IdentifiedImage(image: still) }
         }
+    }
+
+    /// Open the blocked-area editor on the frame the pass is showing.
+    ///
+    /// Holds the pass first, so the frame being drawn on is the frame on screen rather
+    /// than whatever has gone past by the time the editor opens.
+    private func openZoneEditorForPass() {
+        guard let frame = reanalyser.activeProcessor?.currentFrame else { return }
+
+        if !reanalyser.isPaused { reanalyser.togglePlayback() }
+        zoneBackdrop = IdentifiedImage(image: frame)
     }
 
     // MARK: Re-analysis
@@ -838,6 +875,11 @@ struct AnalysisReviewView: View {
 struct ShotVerdictBar: View {
 
     let attempt: ShotAttempt
+
+    /// Whether the three buttons spread across the row. False when the bar is sharing a
+    /// row with the transport, where it has to take only the width it needs.
+    var fillsWidth = true
+
     let onVerdict: (ShotAttempt.UserVerdict?) -> Void
 
     var body: some View {
@@ -853,11 +895,15 @@ struct ShotVerdictBar: View {
                     HStack(spacing: 4) {
                         Image(systemName: verdict.symbol)
                         Text(verdict.label)
+                            .lineLimit(1)
+                            // Insurance for the narrowest phone in landscape, where the
+                            // row is tighter than the maths suggests.
+                            .minimumScaleFactor(0.8)
                     }
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: fillsWidth ? .infinity : nil)
                     .background(
                         isActive ? tint(verdict).opacity(0.85) : Color.white.opacity(0.14),
                         in: Capsule()

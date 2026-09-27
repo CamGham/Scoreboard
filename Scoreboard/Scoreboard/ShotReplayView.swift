@@ -94,10 +94,8 @@ struct ShotReplayView: View {
         HStack(alignment: .top) {
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
-                    .font(.footnote.weight(.bold))
-                    .padding(9)
-                    .background(.ultraThinMaterial, in: Circle())
             }
+            .buttonStyle(.chromeCircle)
 
             Spacer()
 
@@ -109,14 +107,7 @@ struct ShotReplayView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 24)
-        .background {
-            LinearGradient(
-                colors: [.black.opacity(0.55), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-        }
+        .chromeTopBarBackground()
     }
 
     private var resultBadge: some View {
@@ -159,45 +150,6 @@ struct ShotReplayView: View {
         case .missed: return .red
         case .abandoned: return .secondary
         case .inProgress: return .yellow
-        }
-    }
-
-    /// Ruling controls, placed here because this is the moment the user actually knows
-    /// the answer — they have just watched it.
-    private var verdictBar: some View {
-        HStack(spacing: 8) {
-            ForEach(ShotAttempt.UserVerdict.allCases, id: \.self) { verdict in
-                let isActive = attempt.userVerdict == verdict
-
-                Button {
-                    // Tapping the active ruling clears it, handing the shot back to the
-                    // detector's call.
-                    onVerdict?(isActive ? nil : verdict)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: verdict.symbol)
-                        Text(verdict.label)
-                    }
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        isActive ? verdictTint(verdict).opacity(0.85) : Color.white.opacity(0.14),
-                        in: Capsule()
-                    )
-                    .foregroundStyle(isActive ? .black : .white)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private func verdictTint(_ verdict: ShotAttempt.UserVerdict) -> Color {
-        switch verdict {
-        case .made: return .green
-        case .missed: return .red
-        case .notAShot: return .orange
         }
     }
 
@@ -256,19 +208,16 @@ struct ShotReplayView: View {
                         .frame(maxWidth: 190)
                 }
 
-                if onVerdict != nil { verdictBar }
+                if onVerdict != nil {
+                    ShotVerdictBar(attempt: attempt) { verdict in
+                        onVerdict?(verdict)
+                    }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
             .padding(.bottom, 8)
-            .background {
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.65)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            }
+            .chromeBarBackground()
         }
     }
 
@@ -299,19 +248,21 @@ struct ShotReplayView: View {
     }
 
     private func transport(_ replay: ShotReplayPlayer) -> some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 4) {
             Button {
                 replay.step(by: -1.0 / 30.0)
             } label: {
                 Image(systemName: "backward.frame.fill")
             }
+            .buttonStyle(.chromeGlyph)
+            .buttonRepeatBehavior(.enabled)
 
             Button {
                 replay.togglePlayback()
             } label: {
                 Image(systemName: replay.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 40))
             }
+            .buttonStyle(.chromeGlyph(size: 42))
             .contentTransition(.symbolEffect(.replace))
 
             Button {
@@ -319,8 +270,9 @@ struct ShotReplayView: View {
             } label: {
                 Image(systemName: "forward.frame.fill")
             }
+            .buttonStyle(.chromeGlyph)
+            .buttonRepeatBehavior(.enabled)
         }
-        .font(.title3)
         .foregroundStyle(.white)
     }
 

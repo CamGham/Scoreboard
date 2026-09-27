@@ -84,6 +84,31 @@ final class SectionReanalyser {
         isWatching = isOn
         activeProcessor?.producesPreviewFrames = isOn
         activeProcessor?.tracker.setOverlayUpdates(isOn)
+
+        // Pausing is for looking at a frame. With nothing on screen to look at there is
+        // nothing to pause for, and a pass left paused behind a disabled close button
+        // would be a dead end.
+        if !isOn { activeProcessor?.playback = .resume }
+    }
+
+    /// Whether the pass in progress is paused on a frame.
+    var isPaused: Bool {
+        activeProcessor?.playback == .pause
+    }
+
+    /// Hold the pass on the current frame, or let it carry on.
+    ///
+    /// Only flips the flag: the frame loop is owned by `drive`, and starting a second one
+    /// here would have two readers pulling from the same output.
+    func togglePlayback() {
+        guard let processor = activeProcessor else { return }
+        processor.playback = processor.playback == .resume ? .pause : .resume
+    }
+
+    /// Apply blocked-out areas to the pass in progress, so the rest of the window is
+    /// analysed with them. Frames already gone by keep whatever they found.
+    func applyExclusions(_ zones: [ExclusionZone]) {
+        activeProcessor?.tracker.setExclusionZones(zones)
     }
 
     func clearResult() {
@@ -284,6 +309,17 @@ final class SectionReanalyser {
         // Runs the same loop the first pass ran, and stops when the range is exhausted —
         // `readNextFrame` pauses and calls `clear()`, which resolves anything still open.
         await processor.play()
+
+        // `play()` also returns the moment the user pauses, so returning here would take
+        // a pause for a finished window and merge half a section's results. Only the
+        // reader running out ends the pass.
+        while !processor.isComplete, processor.videoReader.status != .failed {
+            try await Task.sleep(for: .milliseconds(120))
+
+            if processor.playback == .resume {
+                await processor.play()
+            }
+        }
 
         guard processor.videoReader.status != .failed else { throw Failure.readFailed }
 

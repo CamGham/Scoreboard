@@ -26,7 +26,10 @@ struct ShotWindowScrubber: View {
     /// Where this shot sits on the clip-wide bar below, 0–1, so the caret can point at
     /// it. Without the pointer the two bars are just two bars; with it, it is obvious
     /// which part of the clip this one has been opened on.
-    let caretFraction: Double
+    ///
+    /// Nil when the clip-wide bar isn't underneath — in landscape this sits up in the top
+    /// bar, where a pointer would aim at the middle of the video and mean nothing.
+    let caretFraction: Double?
 
     let onScrubBegan: () -> Void
     let onScrub: (Double) -> Void
@@ -63,7 +66,7 @@ struct ShotWindowScrubber: View {
             }
             .frame(height: 34)
 
-            caret
+            if caretFraction != nil { caret }
         }
         .animation(.easeOut(duration: 0.15), value: isDragging)
     }
@@ -126,7 +129,7 @@ struct ShotWindowScrubber: View {
                 .fill(marker.tint.opacity(0.65))
                 .frame(width: 10, height: 5)
                 .position(
-                    x: inset + (CGFloat(min(max(caretFraction, 0), 1)) * max(geometry.size.width - inset * 2, 0)),
+                    x: inset + (CGFloat(min(max(caretFraction ?? 0, 0), 1)) * max(geometry.size.width - inset * 2, 0)),
                     y: 3
                 )
         }

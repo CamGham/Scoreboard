@@ -291,3 +291,55 @@ func collectorHandlesNoExistingHandler() {
 
     #expect(found.attempts.count == 1)
 }
+
+// MARK: - Holding a pass
+
+/// Set once the pass returns, so the test can tell "still running" from "finished".
+private final class CompletionBox {
+    private(set) var isFinished = false
+    func finish() { isFinished = true }
+}
+
+@Test("Pausing holds the window open instead of ending it half way")
+func pausingDoesNotFinishTheWindow() async throws {
+    // The bug this guards: `play()` returns the moment playback is paused, so a `drive`
+    // that took that for the end of the window would merge half a section's results over
+    // the whole of it — silently, and with the marks cleared behind it.
+    let url = try await makeTestClip(seconds: 4)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let range = 0.5...1.8
+    let processor = try await SectionReanalyser.makeProcessor(
+        asset: AVURLAsset(url: url),
+        range: range,
+        rim: mergeRim,
+        watching: false
+    )
+
+    let completion = CompletionBox()
+    let pass = Task { () -> [ShotAttempt] in
+        let attempts = try await SectionReanalyser.drive(
+            processor: processor,
+            range: range,
+            onProgress: { _ in }
+        )
+        completion.finish()
+        return attempts
+    }
+
+    // Let a few frames go by, then hold it. The clip is ~39 frames and the detector runs
+    // well under real time, so this lands early in the window.
+    try await Task.sleep(for: .milliseconds(300))
+    processor.playback = .pause
+    try await Task.sleep(for: .milliseconds(400))
+
+    #expect(processor.isComplete == false)
+    #expect(completion.isFinished == false, "a paused pass must not report its window as analysed")
+
+    // Carrying on finishes it properly.
+    processor.playback = .resume
+    _ = try await pass.value
+
+    #expect(processor.isComplete)
+    #expect(completion.isFinished)
+}

@@ -45,23 +45,13 @@ struct AnalysisStartCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 8) {
-                choice(
-                    title: "Watch the analysis",
-                    detail: "Every frame on screen, with what the detector sees",
-                    symbol: "eye",
-                    isProminent: true,
-                    action: onWatch
-                )
-
-                choice(
-                    title: "Analyse without watching",
-                    detail: "Skips drawing each frame, so it finishes sooner",
-                    symbol: "eye.slash",
-                    isProminent: false,
-                    action: onRunWithoutWatching
-                )
-            }
+            choice(
+                title: "Start analysing",
+                detail: "Every frame on screen, with what the detector sees",
+                symbol: "eye",
+                isProminent: true,
+                action: onWatch
+            )
         }
         .padding(18)
         .frame(maxWidth: 340)
@@ -78,8 +68,29 @@ struct AnalysisStartCard: View {
         let length = clipDuration > 0 ? ShotScrubber.length(clipDuration) : "this clip"
 
         return hasRim
-            ? "\(length) of footage, rim found. You can switch views at any time."
-            : "\(length) of footage. No rim found yet — watching lets you place it."
+            ? "\(length) of footage, rim found."
+            : "\(length) of footage. No rim found yet — you can place it as it runs."
+    }
+
+    /// Not currently shown — see `card`.
+    ///
+    /// Running unwatched is quicker, but with one video in flight there is nothing to
+    /// spend the difference on: the wait is the same either way. It belongs here again
+    /// the moment analyses can be queued or run several at a time, at which point the
+    /// remaining button goes back to being "Watch the analysis" — the two only need
+    /// telling apart when there is a choice to make.
+    ///
+    /// `onRunWithoutWatching` is still wired up by the caller, so bringing this back is
+    /// a matter of putting it in the stack beside the other one.
+    @ViewBuilder
+    private var runWithoutWatchingChoice: some View {
+        choice(
+            title: "Analyse without watching",
+            detail: "Skips drawing each frame, so it finishes sooner",
+            symbol: "eye.slash",
+            isProminent: false,
+            action: onRunWithoutWatching
+        )
     }
 
     private func choice(

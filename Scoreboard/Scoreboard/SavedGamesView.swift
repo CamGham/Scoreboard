@@ -183,7 +183,6 @@ struct SavedGameDetailView: View {
                     orientedVideoSize: orientedVideoSize,
                     onDismiss: { showReview = false },
                     frameProvider: frameProvider,
-                    ballStats: run?.ballStats,
                     sections: plan?.sections ?? [],
                     onSectionsChanged: { saveSections($0) },
                     exclusions: truth?.exclusions ?? [],

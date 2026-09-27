@@ -25,7 +25,6 @@ struct VideoView: View {
     @State var showLibrary = false
     @State var assetState = AssetState.unSelected
     
-    @State var showHistory = false
 
     /// Rim resolution happens before playback: the detector opens no attempts without a
     /// scoring plane, so anything that happened before the rim was known would be lost.
@@ -72,6 +71,10 @@ struct VideoView: View {
 
     /// Whether the blocked-area editor is up, drawn on the frame on screen.
     @State var showZoneEditor = false
+
+    /// Asked before leaving a pass that hasn't finished, since the frames it never
+    /// reached are frames nothing knows about.
+    @State var showDismissConfirmation = false
     var body: some View {
         VStack {
             switch assetState {
@@ -128,80 +131,18 @@ struct VideoView: View {
                             .padding(.top, 60)
                         }
                     }
-                    .overlay(alignment: .bottomLeading) {
-                        if showsPreview {
-                            HStack(spacing: 8) {
-                                Button {
-                                    showRimPlacement = true
-                                } label: {
-                                    Label("Rim", systemImage: "scope")
-                                        .labelStyle(.iconOnly)
-                                }
-                                .buttonStyle(.bordered)
-                                .buttonBorderShape(.circle)
-
-                                // Watching is when a bin or a sign being read as the ball
-                                // is actually noticed, so the fix is offered right here.
-                                Button {
-                                    withAnimation { videoProcessor.playback = .pause }
-                                    showZoneEditor = true
-                                } label: {
-                                    Label("Block area", systemImage: "nosign")
-                                        .labelStyle(.iconOnly)
-                                }
-                                .buttonStyle(.bordered)
-                                .buttonBorderShape(.circle)
-                                .tint(truth?.exclusions.isEmpty == false ? .red : nil)
-                            }
-                            .padding()
-                        }
-                    }
-                    .overlay(alignment: .bottom) {
-                        HStack {
-                            Spacer()
-                            chromeButton {
-                                showHistory.toggle()
-                            } label: {
-                                Image(systemName: "list.clipboard")
-                            }
-                            .padding()
-                        }
-                    }
-                    .overlay(alignment: .bottom) {
-                        if hasStartedAnalysis {
-                            HStack {
-                                chromeButton(circular: true) {
-                                    togglePlayback(videoProcessor)
-                                } label: {
-                                    Image(systemName: videoProcessor.playback == .pause ? "play.fill" : "pause.fill")
-                                }
-                                .contentTransition(.symbolEffect(.replace))
-
-                                // Switchable mid-pass: watching costs a redraw a frame,
-                                // and the moment you stop needing to see it, you stop
-                                // paying for it.
-                                chromeButton(circular: true) {
-                                    setPreview(!showsPreview)
-                                } label: {
-                                    Image(systemName: showsPreview ? "eye.slash" : "eye")
-                                }
-                                .contentTransition(.symbolEffect(.replace))
-
-                                chromeButton {
-                                    Task { await videoProcessor.next() }
-                                } label: {
-                                    Text("next")
-                                }
-                            }
-                            .padding(.bottom)
-                        }
-                    }
+                    // One bottom bar rather than three overlays pinned to the same
+                    // edge: with the blocking button spelled out, a leading group and a
+                    // centred group landed on top of each other.
+                    .overlay(alignment: .bottom) { bottomControls(videoProcessor) }
                     .overlay {
                         if !hasStartedAnalysis {
                             AnalysisStartCard(
                                 clipDuration: clipDuration,
                                 hasRim: videoProcessor.tracker.gameState.rim != nil,
                                 onWatch: { startAnalysis(watching: true) },
+                                // Kept wired up though the card no longer offers it —
+                                // see `AnalysisStartCard.runWithoutWatchingChoice`.
                                 onRunWithoutWatching: { startAnalysis(watching: false) }
                             )
                         }
@@ -211,30 +152,28 @@ struct VideoView: View {
             
         }
         .ignoresSafeArea()
-        .overlay(alignment: .topLeading, content: {
-            Group {
-                if #available(iOS 26.0, *) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .padding(4)
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
+        .overlay(alignment: .topLeading) {
+            Button {
+                // Nothing to warn about when there is nothing half-done.
+                if isAnalysisUnfinished {
+                    showDismissConfirmation = true
                 } else {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle")
-                            .padding(4)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.circle)
+                    dismiss()
                 }
+            } label: {
+                Image(systemName: "xmark")
             }
-            .padding(4)
-        })
+            .buttonStyle(.chromeCircle)
+            .padding(8)
+        }
+        // Deliberately does not pause the pass: if the answer is "keep analysing", the
+        // seconds spent deciding shouldn't have been wasted.
+        .alert("Stop analysing?", isPresented: $showDismissConfirmation) {
+            Button("Keep analysing", role: .cancel) { }
+            Button("Stop and save", role: .destructive) { dismiss() }
+        } message: {
+            Text(dismissWarning)
+        }
         .sheet(isPresented: $showLibrary) {
             VideoPicker(
                 isPresented: $showLibrary,
@@ -244,7 +183,8 @@ struct VideoView: View {
             )
         }
         .onAppear(perform: {
-            showLibrary = true
+            // TEMP-NOLIB
+            if asset == nil { showLibrary = true }
         })
         .task(id: asset) {
             guard let asset else { return }
@@ -347,9 +287,6 @@ struct VideoView: View {
                 )
             }
         }
-        .onChange(of: showHistory) { _, isShowing in
-            if isShowing { saveRun() }
-        }
         // The reader has run out of frames: the numbers are final, so save them and hand
         // the user the reviewable version of the clip.
         .onChange(of: videoProcessor?.isComplete ?? false) { _, finished in
@@ -365,7 +302,6 @@ struct VideoView: View {
                     orientedVideoSize: videoProcessor.orientedVideoSize,
                     onDismiss: { showAnalysisReview = false },
                     frameProvider: frameProvider,
-                    ballStats: videoProcessor.tracker.ballDetector?.stats,
                     sections: plan?.sections ?? [],
                     // No identifier means nowhere to write marks, so don't offer to take
                     // them — a mark that silently evaporates is worse than none.
@@ -378,17 +314,110 @@ struct VideoView: View {
             }
         }
         .onDisappear { saveRun() }
-        .sheet(isPresented: $showHistory) {
-            if let videoProcessor {
-                ShotTimelineView(
-                    gameState: videoProcessor.tracker.gameState,
-                    ballStats: videoProcessor.tracker.ballDetector?.stats,
-                    frameProvider: frameProvider,
-                    asset: asset,
-                    orientedVideoSize: videoProcessor.orientedVideoSize
-                )
+    }
+
+    /// The controls along the bottom of the analysis view.
+    ///
+    /// `ViewThatFits` picks the single row when there is width for it and stacks the two
+    /// groups when there isn't — which covers the narrow phones, landscape, and a large
+    /// Dynamic Type setting without a width calculation that would be wrong on one of
+    /// them.
+    @ViewBuilder
+    func bottomControls(_ videoProcessor: VideoProcessor) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                frameTools(videoProcessor)
+                Spacer(minLength: 12)
+                transportControls(videoProcessor)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    frameTools(videoProcessor)
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 8) {
+                    transportControls(videoProcessor)
+                    Spacer(minLength: 0)
+                }
             }
         }
+        .padding(.horizontal)
+        .padding(.top, 14)
+        .padding(.bottom)
+        .chromeBarBackground()
+    }
+
+    /// What can be corrected about the frame itself. Both need the picture, so both go
+    /// when the preview does.
+    @ViewBuilder
+    func frameTools(_ videoProcessor: VideoProcessor) -> some View {
+        if showsPreview {
+            Button {
+                showRimPlacement = true
+            } label: {
+                Label("Rim", systemImage: "scope")
+            }
+            .buttonStyle(.chromeChip)
+
+            // Watching is when a bin or a sign being read as the ball is actually
+            // noticed, so the fix is offered right here — spelled out, because a bare
+            // "no entry" glyph doesn't say what it would do to the analysis.
+            Button {
+                withAnimation { videoProcessor.playback = .pause }
+                showZoneEditor = true
+            } label: {
+                Label(blockedAreasLabel, systemImage: "nosign")
+            }
+            .buttonStyle(
+                .chromeChip(
+                    tint: truth?.exclusions.isEmpty == false
+                        ? .red.opacity(0.3)
+                        : .white.opacity(0.14)
+                )
+            )
+        }
+    }
+
+    /// Not currently shown — see `transportControls`.
+    ///
+    /// Hiding the preview mid-pass makes the analysis quicker, but while a single video
+    /// is the only thing being analysed there is nothing to spend that time on: the user
+    /// is sat watching a progress bar either way. It earns its place the moment there is
+    /// somewhere else to be — a queue, or several videos analysed at once — so it is
+    /// parked here rather than deleted.
+    ///
+    /// Everything behind it still works: `setPreview(_:)` is what the start card's
+    /// "Analyse without watching" calls, and the progress panel offers the way back.
+    @ViewBuilder
+    func previewToggle() -> some View {
+        Button {
+            setPreview(!showsPreview)
+        } label: {
+            Image(systemName: showsPreview ? "eye.slash" : "eye")
+        }
+        .buttonStyle(.chromeGlyph)
+        .contentTransition(.symbolEffect(.replace))
+    }
+
+    @ViewBuilder
+    func transportControls(_ videoProcessor: VideoProcessor) -> some View {
+        if hasStartedAnalysis {
+            Button {
+                togglePlayback(videoProcessor)
+            } label: {
+                Image(systemName: videoProcessor.playback == .pause ? "play.circle.fill" : "pause.circle.fill")
+            }
+            .buttonStyle(.chromeGlyph(size: 42))
+            .contentTransition(.symbolEffect(.replace))
+
+        }
+
+    }
+
+    var blockedAreasLabel: String {
+        let count = truth?.exclusions.count ?? 0
+        return count == 0 ? "Block area" : "Blocked \(count)"
     }
 
     /// How the pass is going, in media time against wall-clock time.
@@ -414,27 +443,6 @@ struct VideoView: View {
             resume(videoProcessor)
         } else {
             withAnimation { videoProcessor.playback = .pause }
-        }
-    }
-
-    /// The bottom-bar buttons, in whichever material this OS has.
-    ///
-    /// One place for the availability split: it was previously written out per button,
-    /// which meant every new control arrived as two near-identical copies.
-    @ViewBuilder
-    func chromeButton<Label: View>(
-        circular: Bool = false,
-        action: @escaping () -> Void,
-        @ViewBuilder label: () -> Label
-    ) -> some View {
-        if #available(iOS 26.0, *) {
-            Button(action: action, label: label)
-                .buttonStyle(.glass)
-                .buttonBorderShape(circular ? .circle : .roundedRectangle)
-        } else {
-            Button(action: action, label: label)
-                .buttonStyle(.bordered)
-                .buttonBorderShape(circular ? .circle : .roundedRectangle)
         }
     }
 
@@ -524,6 +532,44 @@ struct VideoView: View {
 
         plan = document
         try? store.savePlan(document)
+    }
+
+    /// Whether leaving now would abandon frames that have never been looked at.
+    ///
+    /// A pass that finished, or never started, has nothing to lose by closing.
+    var isAnalysisUnfinished: Bool {
+        guard hasStartedAnalysis, let videoProcessor else { return false }
+        return !videoProcessor.isComplete
+    }
+
+    /// What leaving early costs, in the terms the user can see on screen.
+    ///
+    /// Worth spelling out because the result looks complete either way: a timeline of
+    /// shots with totals above it, which says nothing about the half of the video the
+    /// detector never reached.
+    ///
+    /// When several videos can be queued this becomes the wrong question — leaving would
+    /// mean "carry on in the background" rather than "stop" — and this goes with it.
+    var dismissWarning: String {
+        guard let videoProcessor else { return "The rest of the video hasn't been analysed." }
+
+        let progress = progress(for: videoProcessor)
+        let found = videoProcessor.tracker.gameState.reviewableAttempts.count
+
+        let reached = clipDuration > 0
+            ? "Only the first \(ShotScrubber.timecode(progress.analysedSeconds)) of \(ShotScrubber.timecode(progress.clipSeconds)) has been analysed. "
+            : "The video hasn't been analysed all the way through. "
+
+        // Nothing is written for a pass that found nothing — `saveRun` skips an empty
+        // run — so the zero case mustn't promise anything was kept.
+        switch found {
+        case 0:
+            return reached + "No shots have been found yet, and anything later in the video won't be analysed — analysing again starts from the beginning."
+        case 1:
+            return reached + "The shot found so far is saved, but anything later in the video won't be — analysing again starts from the beginning."
+        default:
+            return reached + "The \(found) shots found so far are saved, but anything later in the video won't be — analysing again starts from the beginning."
+        }
     }
 
     /// Persist blocked-out areas, and apply them to the pass in progress.
