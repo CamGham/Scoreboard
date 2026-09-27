@@ -9,13 +9,21 @@ import SwiftUI
 import AVFoundation
 
 /// The library of analysed videos.
-struct SavedGamesView: View {
+///
+/// Owns the whole `List` — rather than being a section of someone else's — so swipe
+/// actions and the delete confirmation hang off one container. Whatever sits above the
+/// library goes in `header`.
+struct SavedGamesView<Header: View>: View {
     let store: ShotStore
+    @ViewBuilder var header: Header
 
     @State private var summaries: [SavedGameSummary] = []
 
     var body: some View {
-        Group {
+        List {
+            header
+                .libraryRow()
+
             if summaries.isEmpty {
                 ContentUnavailableView {
                     Label("No saved games", systemImage: "list.clipboard")
@@ -23,19 +31,17 @@ struct SavedGamesView: View {
                     Text("Analyse a video and it will be kept here, along with any corrections you make.")
                 }
                 .frame(minHeight: 220)
+                .libraryRow()
             } else {
-                LazyVStack(spacing: 10) {
-                    ForEach(summaries) { summary in
-                        NavigationLink {
-                            SavedGameDetailView(summary: summary, store: store)
-                        } label: {
-                            SavedGameRow(summary: summary)
-                        }
-                        .buttonStyle(.plain)
+                ForEach(summaries) { summary in
+                    SavedGameListRow(summary: summary, store: store) {
+                        delete(summary)
                     }
                 }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .task { reload() }
         // Re-read when coming back from a detail view, since corrections there change
         // the totals shown here.
@@ -44,6 +50,80 @@ struct SavedGamesView: View {
 
     private func reload() {
         summaries = store.summaries()
+    }
+
+    /// Removes everything stored for the video — every run, the user's corrections and
+    /// marked sections. The video itself stays in Photos.
+    private func delete(_ summary: SavedGameSummary) {
+        try? store.delete(assetIdentifier: summary.assetIdentifier)
+
+        // Re-read rather than trusting the removal, so a failed delete leaves the row.
+        withAnimation { reload() }
+    }
+}
+
+private extension View {
+    /// Lets non-game content (the header, the empty state) sit on the screen's
+    /// background rather than as a table cell.
+    func libraryRow() -> some View {
+        self
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+    }
+
+    /// Asks before deleting a saved game, since its corrections can't be recovered.
+    func deleteAnalysisConfirmation(
+        isPresented: Binding<Bool>,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Delete this analysis?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Analysis", role: .destructive, action: onConfirm)
+        } message: {
+            Text("Every run and any corrections you've made will be removed. The video stays in your library.")
+        }
+    }
+}
+
+/// One saved game in the library, with its own delete confirmation — so the dialog is
+/// anchored to the row being deleted.
+private struct SavedGameListRow: View {
+    let summary: SavedGameSummary
+    let store: ShotStore
+    let onDelete: () -> Void
+
+    @State private var isConfirmingDelete = false
+
+    var body: some View {
+        NavigationLink {
+            SavedGameDetailView(summary: summary, store: store, onDelete: onDelete)
+        } label: {
+            SavedGameRow(summary: summary)
+        }
+        // Standard row, but over the screen's gradient rather than white.
+        .listRowBackground(Color.clear)
+        // Not `role: .destructive` — that removes the row straight away, before the
+        // confirmation has been answered.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                isConfirmingDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(.red)
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                isConfirmingDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .deleteAnalysisConfirmation(isPresented: $isConfirmingDelete, onConfirm: onDelete)
     }
 }
 
@@ -87,14 +167,8 @@ private struct SavedGameRow: View {
             }
 
             Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
         }
-        .padding(14)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 4)
     }
 }
 
@@ -102,6 +176,12 @@ private struct SavedGameRow: View {
 struct SavedGameDetailView: View {
     let summary: SavedGameSummary
     let store: ShotStore
+
+    /// Carries out the deletion once confirmed. The library owns it so its rows stay in
+    /// step; this view just leaves afterwards.
+    let onDelete: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
 
     @State private var gameState = GameState()
     @State private var truth: GroundTruthDocument?
@@ -125,6 +205,8 @@ struct SavedGameDetailView: View {
     /// The scrubber view over the original clip. Only offered once the video itself has
     /// been resolved — there is nothing to scrub without it.
     @State private var showReview = false
+
+    @State private var isConfirmingDelete = false
 
     var body: some View {
         Group {
@@ -174,6 +256,22 @@ struct SavedGameDetailView: View {
                     }
                 }
             }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button(role: .destructive) {
+                        isConfirmingDelete = true
+                    } label: {
+                        Label("Delete Analysis", systemImage: "trash")
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+            }
+        }
+        .deleteAnalysisConfirmation(isPresented: $isConfirmingDelete) {
+            onDelete()
+            dismiss()
         }
         .fullScreenCover(isPresented: $showReview) {
             if let asset {

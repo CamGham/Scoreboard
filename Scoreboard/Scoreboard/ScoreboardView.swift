@@ -13,24 +13,12 @@ struct ScoreboardView: View {
     var body: some View {
         NavigationStack {
             
-            ScrollView {
-                LazyVStack {
-                    GroupBox {
-                        PreviousGameStats()
-                    }
-                    .groupBoxStyle(CustomGroupBox())
-                    .padding()
-                    .scrollTransition { content, phase in
-                        content
-                            .opacity(phase.isIdentity ? 1 : 0)
-                        //                        .scaleEffect(phase.isIdentity ? 1 : 0.75)
-                            .blur(radius: phase.isIdentity ? 0 : 2)
-                    }
-                    
-                    
-                    SavedGamesView(store: store)
-                        .padding(.horizontal)
+            SavedGamesView(store: store) {
+                GroupBox {
+                    PreviousGameStats()
                 }
+                .groupBoxStyle(CustomGroupBox())
+                .padding(.vertical)
             }
             .navigationTitle("Scoreboard")
             .background {

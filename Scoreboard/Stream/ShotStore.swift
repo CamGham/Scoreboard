@@ -228,7 +228,7 @@ struct ShotStore {
     /// and the user has no reason to know one happened.
     private func migrateLegacyRunIfNeeded(for assetIdentifier: String) {
         let legacy = legacyRunURL(for: assetIdentifier)
-        guard fileManager.fileExists(atPath: legacy.path()) else { return }
+        guard fileManager.fileExists(atPath: legacy.path(percentEncoded: false)) else { return }
 
         defer { try? fileManager.removeItem(at: legacy) }
 
@@ -246,7 +246,7 @@ struct ShotStore {
 
     func delete(assetIdentifier: String) throws {
         let directory = directory(for: assetIdentifier)
-        guard fileManager.fileExists(atPath: directory.path()) else { return }
+        guard fileManager.fileExists(atPath: directory.path(percentEncoded: false)) else { return }
         try fileManager.removeItem(at: directory)
     }
 
