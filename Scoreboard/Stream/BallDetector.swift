@@ -11,7 +11,7 @@ import CoreVideo
 
 /// Running tally of how the ball is being found, so the crop can be judged against the
 /// full-frame sweep it replaced rather than taken on faith.
-struct BallDetectionStats: Equatable {
+struct BallDetectionStats: Codable, Equatable {
     var framesProcessed = 0
 
     var croppedAttempts = 0
@@ -75,17 +75,19 @@ final class BallDetector {
     }
 
     private let model: VNCoreMLModel
-    private let config: BallROIPredictor.Config
+
+    /// Crop geometry in use. Recorded with the run, because it changes what gets found.
+    let config: BallROIPredictor.Config
 
     /// Confidence floor when sweeping the full frame.
-    private let fullFrameConfidence: Float = 0.45
+    let fullFrameConfidence: Float = 0.45
 
     /// Confidence floor inside the crop.
     ///
     /// Lower on purpose. Location is already strongly constrained by the prediction, so
     /// a middling box in the right place is far more likely to be the ball than the same
     /// score anywhere in a full frame.
-    private let croppedConfidence: Float = 0.25
+    let croppedConfidence: Float = 0.25
 
     private(set) var consecutiveMisses = 0
     private(set) var stats = BallDetectionStats()
@@ -95,6 +97,13 @@ final class BallDetector {
         self.model = model
         self.config = config
     }
+
+    /// Parts of the frame whose sightings are thrown away. See `ExclusionZone` — and
+    /// note the fixed-camera assumption it documents.
+    ///
+    /// Applied here rather than only at the tracker, so a decoy can't drag the moving
+    /// crop onto itself and keep the real ball out of frame for the next prediction.
+    var exclusionZones: [ExclusionZone] = []
 
     func reset() {
         consecutiveMisses = 0
@@ -142,6 +151,17 @@ final class BallDetector {
         let candidates = (request.results as? [VNRecognizedObjectObservation] ?? [])
             .filter { $0.labels.first?.identifier == ObjectType.ball.rawValue }
             .filter { $0.confidence >= threshold }
+            .filter { candidate in
+                guard !exclusionZones.isEmpty else { return true }
+
+                // Candidates inside a crop are in the crop's own coordinates, so they
+                // have to be put back on the full frame before a zone means anything.
+                let box = roi.map {
+                    BallROIPredictor.mapToFullFrame(roiRelative: candidate.boundingBox, roi: $0)
+                } ?? candidate.boundingBox
+
+                return !exclusionZones.exclude(boundingBox: box)
+            }
 
         guard let chosen = pick(from: candidates, roi: roi, predictedCentre: predictedCentre) else {
             consecutiveMisses += 1

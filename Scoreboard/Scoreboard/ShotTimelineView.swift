@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 
 /// Compact heads-up display over the video: running tally plus what the detector is
 /// doing right now. Mostly a tuning aid — if a shot isn't being picked up, this shows
@@ -67,154 +68,157 @@ struct ShotTimelineView: View {
     /// Detection tally, so the moving crop can be judged against the full-frame sweep.
     var ballStats: BallDetectionStats?
 
+    /// Supplies the still frame each card is drawn on. Nil for the live camera path,
+    /// where there is no file to seek back into.
+    var frameProvider: ShotFrameProvider?
+
+    /// Backing asset and its oriented size, for replaying a shot. Nil on the camera path.
+    var asset: AVAsset?
+    var orientedVideoSize: CGSize = .zero
+
+    @State private var replaying: ShotAttempt?
+
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    LabeledContent("Attempts", value: "\(gameState.stats.attempts)")
-                    LabeledContent("Made", value: "\(gameState.stats.makes)")
-                    LabeledContent("Missed", value: "\(gameState.stats.misses)")
-                    LabeledContent(
-                        "Field goal",
-                        value: String(format: "%.0f%%", gameState.stats.fieldGoalPercentage)
-                    )
-                    LabeledContent("Points", value: "\(gameState.stats.points)")
-                } header: {
-                    Text("Totals")
-                } footer: {
-                    Text("Every make counts as two. Separating twos from threes needs court calibration, which isn't wired up yet.")
+                totalsSection
+                
+                if gameState.accuracy.reviewed > 0 {
+                    detectorAccuracySection
                 }
-
-                if let stats = ballStats {
-                    Section {
-                        LabeledContent("Frames", value: "\(stats.framesProcessed)")
-                        LabeledContent(
-                            "Ball found",
-                            value: String(format: "%.0f%% of frames", stats.overallHitRate * 100)
-                        )
-                        LabeledContent(
-                            "In crop",
-                            value: String(format: "%.0f%% of %d", stats.croppedHitRate * 100, stats.croppedAttempts)
-                        )
-                        LabeledContent(
-                            "Full frame",
-                            value: String(format: "%.0f%% of %d", stats.fullFrameHitRate * 100, stats.fullFrameAttempts)
-                        )
-                        LabeledContent(
-                            "Mean confidence",
-                            value: String(format: "%.2f", stats.meanConfidence)
-                        )
-                    } header: {
-                        Text("Ball detection")
-                    } footer: {
-                        Text("Compare the crop's hit rate against the full-frame sweep. A trajectory fit needs consecutive sightings, so the share of frames with a ball matters more than confidence.")
-                    }
+                
+                if ballStats != nil {
+                    ballDetectionSection
                 }
-
-                Section("Shots") {
-                    if gameState.shotTimeline.isEmpty {
-                        Text("No shots detected yet")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ForEach(gameState.shotTimeline.reversed()) { attempt in
-                        ShotRow(attempt: attempt)
-                    }
-                }
-
+                
+                shotsSection
+                
                 if !gameState.abandonedAttempts.isEmpty {
-                    Section {
-                        ForEach(gameState.abandonedAttempts.reversed()) { attempt in
-                            ShotRow(attempt: attempt)
-                        }
-                    } header: {
-                        Text("Unresolved")
-                    } footer: {
-                        Text("Opened as a shot but the ball was lost before an outcome could be read. These are excluded from the totals.")
-                    }
+                    unresolvedSection
                 }
             }
             .navigationTitle("Shot timeline")
             .navigationBarTitleDisplayMode(.inline)
         }
+        .fullScreenCover(item: $replaying) { attempt in
+            if let asset {
+                // Re-read from game state rather than using the captured copy, so a
+                // ruling made in the sheet is reflected in the sheet.
+                let live = gameState.attempt(withID: attempt.id) ?? attempt
+
+                ShotReplayView(
+                    attempt: live,
+                    asset: asset,
+                    orientedVideoSize: orientedVideoSize,
+                    onDismiss: { replaying = nil },
+                    onVerdict: { gameState.setVerdict($0, for: attempt.id) }
+                )
+            }
+        }
+        .onChange(of: replaying) { old, new in
+            print("\(new?.id.uuidString ?? "UNknown")")
+        }
     }
-}
-
-private struct ShotRow: View {
-    let attempt: ShotAttempt
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: symbol)
-                    .foregroundStyle(colour)
-                Text(attempt.result.rawValue.capitalized)
-                    .font(.headline)
-
-                Spacer()
-
-                Text(frameRange)
-                    .font(.caption.monospacedDigit())
+    
+    // MARK: - Section Views
+    
+    private var totalsSection: some View {
+        Section {
+            LabeledContent("Attempts", value: "\(gameState.stats.attempts)")
+            LabeledContent("Made", value: "\(gameState.stats.makes)")
+            LabeledContent("Missed", value: "\(gameState.stats.misses)")
+            LabeledContent(
+                "Field goal",
+                value: String(format: "%.0f%%", gameState.stats.fieldGoalPercentage)
+            )
+            LabeledContent("Points", value: "\(gameState.stats.points)")
+        } header: {
+            Text("Totals")
+        } footer: {
+            Text("Every make counts as two. Separating twos from threes needs court calibration, which isn't wired up yet.")
+        }
+    }
+    
+    private var detectorAccuracySection: some View {
+        Section {
+            let accuracy = gameState.accuracy
+            LabeledContent("Shots reviewed", value: "\(accuracy.reviewed)")
+            LabeledContent(
+                "Detector agreed",
+                value: String(format: "%d (%.0f%%)", accuracy.agreed, accuracy.agreementRate)
+            )
+            LabeledContent("Wrong call", value: "\(accuracy.wrongCalls)")
+            LabeledContent("Not a shot", value: "\(accuracy.falsePositives)")
+        } header: {
+            Text("Detector accuracy")
+        } footer: {
+            Text("Measured against your corrections. Every shot you rule on is a labelled example, so this becomes more meaningful the more you review.")
+        }
+    }
+    
+    private var ballDetectionSection: some View {
+        Section {
+            if let stats = ballStats {
+                LabeledContent("Frames", value: "\(stats.framesProcessed)")
+                LabeledContent(
+                    "Ball found",
+                    value: String(format: "%.0f%% of frames", stats.overallHitRate * 100)
+                )
+                LabeledContent(
+                    "In crop",
+                    value: String(format: "%.0f%% of %d", stats.croppedHitRate * 100, stats.croppedAttempts)
+                )
+                LabeledContent(
+                    "Full frame",
+                    value: String(format: "%.0f%% of %d", stats.fullFrameHitRate * 100, stats.fullFrameAttempts)
+                )
+                LabeledContent(
+                    "Mean confidence",
+                    value: String(format: "%.2f", stats.meanConfidence)
+                )
+            }
+        } header: {
+            Text("Ball detection")
+        } footer: {
+            Text("Compare the crop's hit rate against the full-frame sweep. A trajectory fit needs consecutive sightings, so the share of frames with a ball matters more than confidence.")
+        }
+    }
+    
+    private var shotsSection: some View {
+        Section("Shots") {
+            if gameState.shotTimeline.isEmpty {
+                Text("No shots detected yet")
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 8) {
-                if let crossing = decidingCrossing {
-                    // 0.0 is dead centre of the ring, 1.0 is the ring itself.
-                    Tag(text: String(format: "offset %.2f", abs(crossing.normalisedOffset)))
-                }
-                if attempt.rimContacts > 0 {
-                    Tag(text: "rim ×\(attempt.rimContacts)")
-                }
-                if attempt.wasDetectedLate {
-                    Tag(text: "late pickup")
-                }
-                if attempt.isCloseCall {
-                    Tag(text: "close call", tint: .orange)
-                }
+            ForEach(gameState.shotTimeline.reversed()) { attempt in
+                ShotCardView(attempt: attempt, provider: frameProvider)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // Only seekable shots can be replayed.
+                        if asset != nil, attempt.keyTime != nil {
+                            replaying = attempt
+                        }
+                    }
             }
         }
-        .padding(.vertical, 2)
     }
-
-    private var decidingCrossing: RimCrossing? {
-        attempt.crossings.min(by: { abs($0.normalisedOffset) < abs($1.normalisedOffset) })
-    }
-
-    private var frameRange: String {
-        guard let end = attempt.endFrame else { return "\(attempt.startFrame)–" }
-        return "\(attempt.startFrame)–\(end)"
-    }
-
-    private var symbol: String {
-        switch attempt.result {
-        case .made: return "checkmark.circle.fill"
-        case .missed: return "xmark.circle.fill"
-        case .abandoned: return "questionmark.circle.fill"
-        case .inProgress: return "circle.dotted"
+    
+    private var unresolvedSection: some View {
+        Section {
+            ForEach(gameState.abandonedAttempts.reversed()) { attempt in
+                ShotCardView(attempt: attempt, provider: frameProvider)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if asset != nil, attempt.keyTime != nil {
+                            replaying = attempt
+                        }
+                    }
+            }
+        } header: {
+            Text("Unresolved")
+        } footer: {
+            Text("Opened as a shot but the ball was lost before an outcome could be read. These are excluded from the totals.")
         }
-    }
-
-    private var colour: Color {
-        switch attempt.result {
-        case .made: return .green
-        case .missed: return .red
-        case .abandoned: return .secondary
-        case .inProgress: return .yellow
-        }
-    }
-}
-
-private struct Tag: View {
-    let text: String
-    var tint: Color = .secondary
-
-    var body: some View {
-        Text(text)
-            .font(.caption2.monospacedDigit())
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(tint.opacity(0.15), in: Capsule())
-            .foregroundStyle(tint)
     }
 }

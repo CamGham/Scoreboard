@@ -63,7 +63,8 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
 
         do {
             let orientation = exifOrientationFromDeviceOrientation()
-            tracker.beginFrame()
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            tracker.beginFrame(timeSeconds: presentationTime.isValid ? presentationTime.seconds : nil)
             tracker.detectBall(pixelBuffer: buf, orientation: orientation)
 
             if tracker.shouldPredict {

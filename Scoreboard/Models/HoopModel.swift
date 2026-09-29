@@ -12,7 +12,7 @@ import Foundation
 /// A basketball rim viewed from anywhere but directly side-on projects to an ellipse:
 /// wide horizontally, squashed vertically by the camera's elevation angle.
 /// `center` is the true centre of that ellipse — NOT a bounding-box corner.
-struct HoopGeometry: Equatable {
+struct HoopGeometry: Codable, Equatable {
     let center: CGPoint
     let verticalRadius: CGFloat
     let horizontalRadius: CGFloat

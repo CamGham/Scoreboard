@@ -46,6 +46,7 @@ final class ShotTracker {
     /// guarantees the detector sees exactly one sample per frame — feeding it twice
     /// double-weights that frame in the trajectory fit.
     private var currentFrameID: Int = 0
+    private var currentFrameTime: Double?
     private var pendingBall: BallObservation?
 
     var onSnapshot: ((GameSnapshot) -> Void)?
@@ -81,15 +82,19 @@ final class ShotTracker {
         rimTracker.reset()
         pendingBall = nil
         currentFrameID = 0
+        currentFrameTime = nil
     }
 
     /// Open a new frame. Commits whatever the previous frame gathered.
     ///
     /// The driver must call this exactly once per video frame, before running any
     /// detection or tracking for it.
-    func beginFrame(_ frameID: Int) {
+    /// - Parameter timeSeconds: the frame's presentation time. Carried alongside the
+    ///   frame index so shots can be seeked to later; see `BallObservation.timeSeconds`.
+    func beginFrame(_ frameID: Int, timeSeconds: Double? = nil) {
         commitPendingBall()
         currentFrameID = frameID
+        currentFrameTime = timeSeconds
         pendingBall = nil
     }
 
@@ -98,13 +103,21 @@ final class ShotTracker {
         rimTracker.observe(boundingBox: boundingBox, frameID: frameID)
     }
 
+    /// Parts of the frame whose sightings are thrown away. See `ExclusionZone`.
+    var exclusionZones: [ExclusionZone] = []
+
     /// Offer a ball sighting for the frame currently open. The highest-confidence
     /// candidate for a frame is the one the detector sees.
     func ingestBall(boundingBox: CGRect, confidence: CGFloat, frameID: Int) {
+        // Every path into the detector passes through here, so this is where a blocked
+        // area is enforced rather than merely preferred.
+        guard !exclusionZones.exclude(boundingBox: boundingBox) else { return }
+
         let observation = BallObservation(
             frameID: frameID,
             boundingBox: boundingBox,
-            confidence: confidence
+            confidence: confidence,
+            timeSeconds: currentFrameTime
         )
 
         if let existing = pendingBall, existing.confidence >= observation.confidence {
