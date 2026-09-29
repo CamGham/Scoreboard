@@ -9,13 +9,23 @@ import SwiftUI
 import AVFoundation
 
 /// The library of analysed videos.
-struct SavedGamesView: View {
+///
+/// Owns the whole `List` — rather than being a section of someone else's — so swipe
+/// actions and the delete confirmation hang off one container. Whatever sits above the
+/// library goes in `header`.
+struct SavedGamesView<Header: View>: View {
     let store: ShotStore
+    @ViewBuilder var header: Header
 
     @State private var summaries: [SavedGameSummary] = []
 
+    @AppStorage("savedGamesSort") private var sort = SavedGameSort.analysed
+
     var body: some View {
-        Group {
+        List {
+            header
+                .libraryRow()
+
             if summaries.isEmpty {
                 ContentUnavailableView {
                     Label("No saved games", systemImage: "list.clipboard")
@@ -23,32 +33,152 @@ struct SavedGamesView: View {
                     Text("Analyse a video and it will be kept here, along with any corrections you make.")
                 }
                 .frame(minHeight: 220)
+                .libraryRow()
             } else {
-                LazyVStack(spacing: 10) {
-                    ForEach(summaries) { summary in
-                        NavigationLink {
-                            SavedGameDetailView(summary: summary, store: store)
-                        } label: {
-                            SavedGameRow(summary: summary)
-                        }
-                        .buttonStyle(.plain)
+                sortControl
+                    .libraryRow()
+
+                ForEach(sort.sorted(summaries)) { summary in
+                    SavedGameListRow(summary: summary, store: store, sort: sort) {
+                        delete(summary)
                     }
                 }
             }
         }
-        .task { reload() }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .animation(.default, value: sort)
+        .task {
+            reload()
+            backfillCaptureDates()
+        }
         // Re-read when coming back from a detail view, since corrections there change
         // the totals shown here.
         .onAppear { reload() }
     }
 
+    private var sortControl: some View {
+        HStack {
+            Text("Saved games")
+                .font(.headline)
+
+            Spacer()
+
+            Menu {
+                Picker("Sort by", selection: $sort) {
+                    ForEach(SavedGameSort.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+            } label: {
+                Label(sort.title, systemImage: "arrow.up.arrow.down")
+                    .font(.subheadline)
+            }
+        }
+    }
+
     private func reload() {
         summaries = store.summaries()
+    }
+
+    /// Games saved before recording dates were kept don't have one. Fill them in from
+    /// Photos where access has already been granted, once, and write them back so it
+    /// needn't happen again.
+    private func backfillCaptureDates() {
+        let missing = summaries.filter { $0.capturedAt == nil }.map(\.assetIdentifier)
+        let found = VideoLibrary.captureDates(for: missing)
+        guard !found.isEmpty else { return }
+
+        for var summary in summaries {
+            guard summary.capturedAt == nil, let date = found[summary.assetIdentifier] else {
+                continue
+            }
+            summary.capturedAt = date
+            try? store.saveSummary(summary)
+        }
+
+        reload()
+    }
+
+    /// Removes everything stored for the video — every run, the user's corrections and
+    /// marked sections. The video itself stays in Photos.
+    private func delete(_ summary: SavedGameSummary) {
+        try? store.delete(assetIdentifier: summary.assetIdentifier)
+
+        // Re-read rather than trusting the removal, so a failed delete leaves the row.
+        withAnimation { reload() }
+    }
+}
+
+private extension View {
+    /// Lets non-game content (the header, the empty state) sit on the screen's
+    /// background rather than as a table cell.
+    func libraryRow() -> some View {
+        self
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+    }
+
+    /// Asks before deleting a saved game, since its corrections can't be recovered.
+    func deleteAnalysisConfirmation(
+        isPresented: Binding<Bool>,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Delete this analysis?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Analysis", role: .destructive, action: onConfirm)
+        } message: {
+            Text("Every run and any corrections you've made will be removed. The video stays in your library.")
+        }
+    }
+}
+
+/// One saved game in the library, with its own delete confirmation — so the dialog is
+/// anchored to the row being deleted.
+private struct SavedGameListRow: View {
+    let summary: SavedGameSummary
+    let store: ShotStore
+    let sort: SavedGameSort
+    let onDelete: () -> Void
+
+    @State private var isConfirmingDelete = false
+
+    var body: some View {
+        NavigationLink {
+            SavedGameDetailView(summary: summary, store: store, onDelete: onDelete)
+        } label: {
+            SavedGameRow(summary: summary, sort: sort)
+        }
+        // Standard row, but over the screen's gradient rather than white.
+        .listRowBackground(Color.clear)
+        // Not `role: .destructive` — that removes the row straight away, before the
+        // confirmation has been answered.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                isConfirmingDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(.red)
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                isConfirmingDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .deleteAnalysisConfirmation(isPresented: $isConfirmingDelete, onConfirm: onDelete)
     }
 }
 
 private struct SavedGameRow: View {
     let summary: SavedGameSummary
+    let sort: SavedGameSort
 
     var body: some View {
         HStack(spacing: 14) {
@@ -62,10 +192,10 @@ private struct SavedGameRow: View {
             .frame(width: 52)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(summary.analysedAt, format: .dateTime.weekday(.wide).day().month())
+                Text(leadingDate, format: .dateTime.weekday(.wide).day().month())
                     .font(.headline)
 
-                Text(summary.analysedAt, format: .dateTime.hour().minute())
+                Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -87,14 +217,30 @@ private struct SavedGameRow: View {
             }
 
             Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
         }
-        .padding(14)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 4)
+    }
+
+    /// Leads with whichever date the list is ordered by, so the order reads true.
+    /// A game with no recording date falls back to when it was analysed.
+    private var leadingDate: Date {
+        sort.date(of: summary) ?? summary.analysedAt
+    }
+
+    /// The leading date's time, then the other date for context.
+    private var detail: String {
+        let time = leadingDate.formatted(.dateTime.hour().minute())
+        let short = Date.FormatStyle.dateTime.day().month()
+
+        switch sort {
+        case .analysed:
+            guard let captured = summary.capturedAt else { return time }
+            return "\(time) · Recorded \(captured.formatted(short))"
+        case .captured:
+            let analysed = "Analysed \(summary.analysedAt.formatted(short))"
+            guard summary.capturedAt != nil else { return "Recording date unknown · \(analysed)" }
+            return "\(time) · \(analysed)"
+        }
     }
 }
 
@@ -102,6 +248,12 @@ private struct SavedGameRow: View {
 struct SavedGameDetailView: View {
     let summary: SavedGameSummary
     let store: ShotStore
+
+    /// Carries out the deletion once confirmed. The library owns it so its rows stay in
+    /// step; this view just leaves afterwards.
+    let onDelete: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
 
     @State private var gameState = GameState()
     @State private var truth: GroundTruthDocument?
@@ -118,6 +270,15 @@ struct SavedGameDetailView: View {
 
     @State private var runCount = 0
     @State private var showComparison = false
+
+    /// Sections marked for another pass, kept with the video rather than the run.
+    @State private var plan: ReanalysisPlan?
+
+    /// The scrubber view over the original clip. Only offered once the video itself has
+    /// been resolved — there is nothing to scrub without it.
+    @State private var showReview = false
+
+    @State private var isConfirmingDelete = false
 
     var body: some View {
         Group {
@@ -147,6 +308,17 @@ struct SavedGameDetailView: View {
         .navigationTitle(summary.analysedAt.formatted(.dateTime.day().month().hour().minute()))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if asset != nil, !gameState.reviewableAttempts.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showReview = true
+                    } label: {
+                        Label("Review", systemImage: "film")
+                    }
+                    .accessibilityHint("Scrub the whole video with every shot marked")
+                }
+            }
+
             if runCount > 1 {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -155,6 +327,39 @@ struct SavedGameDetailView: View {
                         Label("Compare", systemImage: "arrow.left.arrow.right")
                     }
                 }
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button(role: .destructive) {
+                        isConfirmingDelete = true
+                    } label: {
+                        Label("Delete Analysis", systemImage: "trash")
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+            }
+        }
+        .deleteAnalysisConfirmation(isPresented: $isConfirmingDelete) {
+            onDelete()
+            dismiss()
+        }
+        .fullScreenCover(isPresented: $showReview) {
+            if let asset {
+                AnalysisReviewView(
+                    gameState: gameState,
+                    asset: asset,
+                    orientedVideoSize: orientedVideoSize,
+                    onDismiss: { showReview = false },
+                    frameProvider: frameProvider,
+                    sections: plan?.sections ?? [],
+                    onSectionsChanged: { saveSections($0) },
+                    exclusions: truth?.exclusions ?? [],
+                    onExclusionsChanged: { saveExclusions($0) },
+                    rim: truth?.rim,
+                    onAttemptsMerged: { saveMergedRun() }
+                )
             }
         }
         .sheet(isPresented: $showComparison) {
@@ -173,6 +378,7 @@ struct SavedGameDetailView: View {
         let loaded = store.load(for: summary.assetIdentifier)
         run = loaded.run
         truth = loaded.truth
+        plan = store.loadPlan(for: summary.assetIdentifier)
         runCount = store.runs(for: summary.assetIdentifier).count
 
         if let run = loaded.run {
@@ -196,7 +402,7 @@ struct SavedGameDetailView: View {
                 let transform = try? await track.load(.preferredTransform)
                 orientedVideoSize = VideoLayout.orientedSize(
                     natural ?? .zero,
-                    orientation: orientation(from: transform ?? .identity)
+                    orientation: VideoProcessor.orientation(from: transform ?? .identity)
                 )
             }
         } catch let failure as VideoLibrary.LookupFailure {
@@ -206,13 +412,38 @@ struct SavedGameDetailView: View {
         }
     }
 
-    private func orientation(from transform: CGAffineTransform) -> CGImagePropertyOrientation {
-        switch (transform.a, transform.b, transform.c, transform.d) {
-        case (0, 1, -1, 0): return .right
-        case (0, -1, 1, 0): return .left
-        case (-1, 0, 0, -1): return .down
-        default: return .up
-        }
+    /// Write a re-analysed timeline back over the run it came from.
+    ///
+    /// The same run rather than a new one: re-analysing a window is a correction to this
+    /// pass, not a separate attempt at the whole video, and a new run per section would
+    /// bury the comparison the run list exists for.
+    private func saveMergedRun() {
+        guard var updated = run else { return }
+
+        updated.attempts = gameState.reviewableAttempts
+        run = updated
+
+        try? store.saveRun(updated)
+        try? store.refreshSummary(
+            for: summary.assetIdentifier,
+            attempts: updated.attempts
+        )
+    }
+
+    private func saveExclusions(_ zones: [ExclusionZone]) {
+        var document = truth ?? GroundTruthDocument(assetIdentifier: summary.assetIdentifier)
+        document.exclusions = zones
+
+        truth = document
+        try? store.saveTruth(document)
+    }
+
+    private func saveSections(_ updated: [ReanalysisSection]) {
+        var document = plan ?? ReanalysisPlan(assetIdentifier: summary.assetIdentifier)
+        document.sections = updated
+
+        plan = document
+        try? store.savePlan(document)
     }
 
     private func recordVerdict(_ attempt: ShotAttempt) {

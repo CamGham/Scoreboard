@@ -65,4 +65,37 @@ enum VideoLibrary {
         guard let asset else { throw LookupFailure.assetMissing }
         return asset
     }
+
+    // MARK: Recording dates
+
+    /// When a video was recorded.
+    ///
+    /// Photos' own date comes first: it's the one the user sees there, and they can
+    /// correct it. Without library access the file's metadata stands in — the picker's
+    /// copy keeps it, and reading it needs no permission.
+    static func captureDate(for localIdentifier: String, asset: AVAsset) async -> Date? {
+        if let date = captureDates(for: [localIdentifier])[localIdentifier] {
+            return date
+        }
+
+        guard let item = try? await asset.load(.creationDate) else { return nil }
+        return try? await item.load(.dateValue)
+    }
+
+    /// Photos' recording dates for the given identifiers, keyed by identifier.
+    ///
+    /// Never prompts: without access already granted this returns nothing, so a list
+    /// being drawn can't put up a permission alert.
+    static func captureDates(for localIdentifiers: [String]) -> [String: Date] {
+        guard !localIdentifiers.isEmpty,
+              authorizationStatus == .authorized || authorizationStatus == .limited
+        else { return [:] }
+
+        var dates: [String: Date] = [:]
+        PHAsset.fetchAssets(withLocalIdentifiers: localIdentifiers, options: nil)
+            .enumerateObjects { asset, _, _ in
+                dates[asset.localIdentifier] = asset.creationDate
+            }
+        return dates
+    }
 }

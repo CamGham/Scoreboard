@@ -64,6 +64,16 @@ final class ShotFrameProvider {
         return image
     }
 
+    /// The frame at an arbitrary moment.
+    ///
+    /// Uncached: this is for one-off backdrops — placing a rim, blocking out an area —
+    /// rather than for the timeline's repeated reads of the same few moments.
+    func image(at seconds: Double) async -> Image? {
+        let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+        guard let cgImage = try? await generator.image(at: time).image else { return nil }
+        return Image(decorative: cgImage, scale: 1)
+    }
+
     func cancelAll() {
         for task in inFlight.values { task.cancel() }
         inFlight.removeAll()

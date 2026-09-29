@@ -103,9 +103,16 @@ final class ShotTracker {
         rimTracker.observe(boundingBox: boundingBox, frameID: frameID)
     }
 
+    /// Parts of the frame whose sightings are thrown away. See `ExclusionZone`.
+    var exclusionZones: [ExclusionZone] = []
+
     /// Offer a ball sighting for the frame currently open. The highest-confidence
     /// candidate for a frame is the one the detector sees.
     func ingestBall(boundingBox: CGRect, confidence: CGFloat, frameID: Int) {
+        // Every path into the detector passes through here, so this is where a blocked
+        // area is enforced rather than merely preferred.
+        guard !exclusionZones.exclude(boundingBox: boundingBox) else { return }
+
         let observation = BallObservation(
             frameID: frameID,
             boundingBox: boundingBox,

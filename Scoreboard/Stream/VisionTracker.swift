@@ -58,14 +58,15 @@ class VisionTracker {
     /// longer part of the `VNTrackObjectRequest` pool — see `BallDetector`.
     private(set) var ballDetector: BallDetector?
 
+    /// Zones kept from before the model finished loading, which is when the ball detector
+    /// is built. Without this, zones set during setup would reach the tracker but not the
+    /// detector, and a decoy could still pull the moving crop onto itself.
+    private var pendingExclusionZones: [ExclusionZone] = []
+
     init() {
         print("DEBUG: TRACKER CREATED")
 
-        shotTracker.onSnapshot = { [gameState] snapshot in
-            Task { @MainActor in
-                gameState.apply(snapshot)
-            }
-        }
+        setOverlayUpdates(true)
 
         shotTracker.onEvent = { [gameState] event in
             Task { @MainActor in
@@ -78,6 +79,7 @@ class VisionTracker {
             if let visionModel {
                 setupVision(model: visionModel)
                 ballDetector = BallDetector(model: visionModel)
+                ballDetector?.exclusionZones = pendingExclusionZones
             }
         }
     }
@@ -86,6 +88,21 @@ class VisionTracker {
         print("DEBUG: TRACKER DESTROYED")
     }
     
+    /// Whether per-frame overlay snapshots are published to `gameState`.
+    ///
+    /// Each snapshot is a hop to the main actor, and the only thing that reads one is an
+    /// overlay drawn over the frames. A pass nobody is watching has no use for them, so
+    /// it turns them off — and back on if the user decides to watch after all.
+    func setOverlayUpdates(_ enabled: Bool) {
+        shotTracker.onSnapshot = enabled
+            ? { [gameState] snapshot in
+                Task { @MainActor in
+                    gameState.apply(snapshot)
+                }
+            }
+            : nil
+    }
+
     func clear() {
         seqHandler = VNSequenceRequestHandler()
         shotTracker.endOfStream(atFrame: frameCounter)
@@ -170,6 +187,14 @@ class VisionTracker {
                     colour: .orange)
             ]
         }
+    }
+
+    /// Blocked-out parts of the frame, applied to both the detector's candidate list and
+    /// the tracker's commit point.
+    func setExclusionZones(_ zones: [ExclusionZone]) {
+        pendingExclusionZones = zones
+        shotTracker.exclusionZones = zones
+        ballDetector?.exclusionZones = zones
     }
 
     /// Seed the rim from a pre-flight scan of the clip.

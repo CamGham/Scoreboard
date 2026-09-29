@@ -39,10 +39,39 @@ struct GroundTruthDocument: Codable, Equatable {
 
     var shots: [GroundTruthEntry] = []
 
-    init(assetIdentifier: String, rim: HoopGeometry? = nil, shots: [GroundTruthEntry] = []) {
+    /// Parts of the frame where a ball sighting is ignored — a bin, a sign, anything
+    /// else round and orange that isn't the ball.
+    var exclusions: [ExclusionZone] = []
+
+    init(
+        assetIdentifier: String,
+        rim: HoopGeometry? = nil,
+        shots: [GroundTruthEntry] = [],
+        exclusions: [ExclusionZone] = []
+    ) {
         self.assetIdentifier = assetIdentifier
         self.rim = rim
         self.shots = shots
+        self.exclusions = exclusions
+    }
+
+    // Decoded leniently, for the same reason `ShotDetectorConfig` is: the synthesised
+    // decoder demands every key, so adding a field here would make every previously
+    // saved document unreadable — and this is the file holding the user's corrections,
+    // the one thing in the app that cannot be regenerated.
+    private enum CodingKeys: String, CodingKey {
+        case version, assetIdentifier, rim, shots, exclusions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        version = try container.decodeIfPresent(Int.self, forKey: .version)
+            ?? GroundTruthDocument.currentVersion
+        assetIdentifier = try container.decode(String.self, forKey: .assetIdentifier)
+        rim = try container.decodeIfPresent(HoopGeometry.self, forKey: .rim)
+        shots = try container.decodeIfPresent([GroundTruthEntry].self, forKey: .shots) ?? []
+        exclusions = try container.decodeIfPresent([ExclusionZone].self, forKey: .exclusions) ?? []
     }
 }
 
@@ -315,6 +344,10 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
     var assetIdentifier: String
     var analysedAt: Date
 
+    /// When the video was recorded. Nil for games saved before this was captured, or
+    /// when neither Photos nor the file itself says.
+    var capturedAt: Date?
+
     var attempts: Int
     var makes: Int
 
@@ -341,6 +374,7 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
     init(
         assetIdentifier: String,
         analysedAt: Date = Date(),
+        capturedAt: Date? = nil,
         attempts: Int,
         makes: Int,
         reviewed: Int,
@@ -350,6 +384,7 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
     ) {
         self.assetIdentifier = assetIdentifier
         self.analysedAt = analysedAt
+        self.capturedAt = capturedAt
         self.attempts = attempts
         self.makes = makes
         self.reviewed = reviewed
@@ -362,6 +397,7 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
     init(
         assetIdentifier: String,
         analysedAt: Date = Date(),
+        capturedAt: Date? = nil,
         attempts shots: [ShotAttempt],
         runCount: Int = 1,
         latestRunID: UUID? = nil
@@ -372,6 +408,7 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
         self.init(
             assetIdentifier: assetIdentifier,
             analysedAt: analysedAt,
+            capturedAt: capturedAt,
             attempts: stats.attempts,
             makes: stats.makes,
             reviewed: accuracy.reviewed,
@@ -379,6 +416,44 @@ struct SavedGameSummary: Codable, Equatable, Identifiable {
             runCount: runCount,
             latestRunID: latestRunID
         )
+    }
+}
+
+/// How the library is ordered. Newest first either way.
+enum SavedGameSort: String, CaseIterable, Identifiable {
+    /// When the detector last ran over the video.
+    case analysed
+    /// When the video was recorded — the day the game was actually played.
+    case captured
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .analysed: return "Date Analysed"
+        case .captured: return "Date Recorded"
+        }
+    }
+
+    /// The date a row is ordered by, and so the one it leads with.
+    func date(of summary: SavedGameSummary) -> Date? {
+        switch self {
+        case .analysed: return summary.analysedAt
+        case .captured: return summary.capturedAt
+        }
+    }
+
+    /// Games without a recording date go last rather than being guessed at, ordered
+    /// among themselves by when they were analysed.
+    func sorted(_ summaries: [SavedGameSummary]) -> [SavedGameSummary] {
+        summaries.sorted { lhs, rhs in
+            switch (date(of: lhs), date(of: rhs)) {
+            case let (l?, r?) where l != r: return l > r
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return lhs.analysedAt > rhs.analysedAt
+            }
+        }
     }
 }
 

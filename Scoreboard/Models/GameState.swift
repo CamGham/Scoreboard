@@ -172,6 +172,77 @@ final class GameState {
         }
     }
 
+    // MARK: Re-analysis
+
+    /// What a merge changed, for telling the user what just happened.
+    struct MergeOutcome: Equatable {
+        var removed = 0
+        var added = 0
+
+        var changedAnything: Bool { removed > 0 || added > 0 }
+    }
+
+    /// Swap everything detected inside a window for the results of a fresh pass over it.
+    ///
+    /// Scoped by time rather than by attempt id: the new pass has never seen the old
+    /// attempts, so the window is the only thing the two runs agree on. Anything whose
+    /// key moment falls inside it is the old pass's opinion of that footage, and is
+    /// replaced wholesale — a partial merge would leave the two runs' disagreements
+    /// sitting side by side as duplicate shots.
+    @discardableResult
+    func replaceAttempts(
+        in range: ClosedRange<Double>,
+        with attempts: [ShotAttempt]
+    ) -> MergeOutcome {
+
+        // Rulings are keyed by time, so whatever the user decided about this stretch is
+        // reapplied to whatever the new pass found in the same place. This is the reason
+        // corrections were never stored inside a run.
+        let incoming = GroundTruthMatcher.apply(storedTruth, to: attempts)
+
+        func isInside(_ attempt: ShotAttempt) -> Bool {
+            guard let key = attempt.keyTime else { return false }
+            return range.contains(key)
+        }
+
+        let removed = shotTimeline.filter(isInside).count
+            + abandonedAttempts.filter(isInside).count
+
+        shotTimeline.removeAll(where: isInside)
+        abandonedAttempts.removeAll(where: isInside)
+
+        var added = 0
+        for attempt in incoming {
+            switch attempt.result {
+            case .made, .missed:
+                shotTimeline.append(attempt)
+                added += 1
+            case .abandoned:
+                abandonedAttempts.append(attempt)
+                added += 1
+            case .inProgress:
+                // Still open when the window ran out: the pass saw only part of it, so
+                // it is no one's idea of a result.
+                break
+            }
+        }
+
+        // Both lists are read in order, so a section spliced into the middle has to be
+        // sorted back into place rather than appended.
+        shotTimeline.sort(by: Self.chronologically)
+        abandonedAttempts.sort(by: Self.chronologically)
+
+        lastMadeFrame = shotTimeline.last(where: { $0.effectiveResult == .made })?.endFrame
+
+        return MergeOutcome(removed: removed, added: added)
+    }
+
+    /// Untimed attempts sort last — they can't be placed, and putting them first would
+    /// claim they happened at the start of the clip.
+    private static func chronologically(_ lhs: ShotAttempt, _ rhs: ShotAttempt) -> Bool {
+        (lhs.keyTime ?? .greatestFiniteMagnitude) < (rhs.keyTime ?? .greatestFiniteMagnitude)
+    }
+
     /// Reapply stored rulings to the attempts detected so far, matching by time.
     func applyStoredTruth(_ truth: [GroundTruthEntry]) {
         storedTruth = truth

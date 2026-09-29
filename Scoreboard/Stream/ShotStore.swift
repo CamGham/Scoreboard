@@ -85,6 +85,12 @@ struct ShotStore {
         directory(for: assetIdentifier).appending(path: "summary.json")
     }
 
+    /// Sections the user has marked for another look. Third lifetime alongside runs and
+    /// truth: work still to do, rather than what happened or what was decided.
+    private func planURL(for assetIdentifier: String) -> URL {
+        directory(for: assetIdentifier).appending(path: "reanalysis.json")
+    }
+
     // MARK: Listing
 
     /// Headlines for every saved video, newest first.
@@ -116,6 +122,19 @@ struct ShotStore {
 
     func saveTruth(_ document: GroundTruthDocument) throws {
         try write(document, to: truthURL(for: document.assetIdentifier))
+    }
+
+    // MARK: Re-analysis marks
+
+    func loadPlan(for assetIdentifier: String) -> ReanalysisPlan {
+        guard let plan: ReanalysisPlan = read(planURL(for: assetIdentifier)) else {
+            return ReanalysisPlan(assetIdentifier: assetIdentifier)
+        }
+        return plan
+    }
+
+    func savePlan(_ plan: ReanalysisPlan) throws {
+        try write(plan, to: planURL(for: plan.assetIdentifier))
     }
 
     // MARK: Analysis runs
@@ -209,7 +228,7 @@ struct ShotStore {
     /// and the user has no reason to know one happened.
     private func migrateLegacyRunIfNeeded(for assetIdentifier: String) {
         let legacy = legacyRunURL(for: assetIdentifier)
-        guard fileManager.fileExists(atPath: legacy.path()) else { return }
+        guard fileManager.fileExists(atPath: legacy.path(percentEncoded: false)) else { return }
 
         defer { try? fileManager.removeItem(at: legacy) }
 
@@ -227,7 +246,7 @@ struct ShotStore {
 
     func delete(assetIdentifier: String) throws {
         let directory = directory(for: assetIdentifier)
-        guard fileManager.fileExists(atPath: directory.path()) else { return }
+        guard fileManager.fileExists(atPath: directory.path(percentEncoded: false)) else { return }
         try fileManager.removeItem(at: directory)
     }
 
@@ -241,13 +260,21 @@ struct ShotStore {
     }
 
     /// Rewrite the library headline for a video from its current runs and rulings.
-    func refreshSummary(for assetIdentifier: String, attempts: [ShotAttempt]) throws {
+    ///
+    /// The recording date belongs to the video, not the runs, so it carries over from the
+    /// existing summary unless a new one is given.
+    func refreshSummary(
+        for assetIdentifier: String,
+        attempts: [ShotAttempt],
+        capturedAt: Date? = nil
+    ) throws {
         let stored = runs(for: assetIdentifier)
 
         try saveSummary(
             SavedGameSummary(
                 assetIdentifier: assetIdentifier,
                 analysedAt: stored.first?.analysedAt ?? Date(),
+                capturedAt: capturedAt ?? loadSummary(for: assetIdentifier)?.capturedAt,
                 attempts: attempts,
                 runCount: stored.count,
                 latestRunID: stored.first?.id
