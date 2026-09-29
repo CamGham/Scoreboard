@@ -142,11 +142,15 @@ func verdictDrivesMarkerColour() {
 
 @Test("A scrub inside the snap radius lands exactly on the shot")
 func snapsToNearbyMarker() {
-    let markers = [marker(at: 10), marker(at: 30, ordinal: 2)]
+    let first = marker(at: 10)
+    let markers = [first, marker(at: 30, ordinal: 2)]
 
-    let target = ShotMarker.snapTarget(for: 10.8, in: markers, within: 1.0)
+    // Measured from the anchor, since that is where the tick the finger is aiming at
+    // actually sits.
+    let target = ShotMarker.snapTarget(for: first.anchorTime + 0.8, in: markers, within: 1.0)
 
-    #expect(target?.time == 10)
+    #expect(target?.ordinal == 1)
+    #expect(target?.anchorTime == first.anchorTime)
 }
 
 @Test("A scrub outside the radius is left where the finger put it")
@@ -158,10 +162,16 @@ func doesNotSnapBeyondRadius() {
 
 @Test("Between two shots, the nearer one wins")
 func snapsToNearestOfSeveral() {
-    let markers = [marker(at: 10), marker(at: 12, ordinal: 2)]
+    let first = marker(at: 10)
+    let second = marker(at: 12, ordinal: 2)
+    let markers = [first, second]
 
-    #expect(ShotMarker.snapTarget(for: 11.4, in: markers, within: 2.0)?.time == 12)
-    #expect(ShotMarker.snapTarget(for: 10.6, in: markers, within: 2.0)?.time == 10)
+    // Measured against the anchors rather than hardcoded times, so this keeps testing
+    // "nearest wins" whichever end of a shot `ShotMarker.anchor` puts the tick on.
+    let midpoint = (first.anchorTime + second.anchorTime) / 2
+
+    #expect(ShotMarker.snapTarget(for: midpoint + 0.2, in: markers, within: 2.0)?.ordinal == 2)
+    #expect(ShotMarker.snapTarget(for: midpoint - 0.2, in: markers, within: 2.0)?.ordinal == 1)
 }
 
 @Test("Nothing to snap to on a clip with no detected shots")
@@ -185,40 +195,63 @@ private func windowedMarker(at time: Double, ordinal: Int = 1) -> ShotMarker {
     )
 }
 
+@Test("Markers snap and sort by their anchor, wherever that is placed")
+func snapUsesTheAnchor() {
+    // A shot whose crossing is at 12s but whose window opens at 10.8s: with the anchor at
+    // the start, a finger near 10.9s is on the shot and one near 12s is not.
+    let shot = windowedMarker(at: 12)
+
+    switch ShotMarker.anchor {
+    case .shotStart:
+        #expect(ShotMarker.snapTarget(for: 10.9, in: [shot], within: 0.5) != nil)
+        #expect(ShotMarker.snapTarget(for: 12.0, in: [shot], within: 0.5) == nil)
+    case .keyMoment:
+        #expect(ShotMarker.snapTarget(for: 12.0, in: [shot], within: 0.5) != nil)
+        #expect(ShotMarker.snapTarget(for: 10.9, in: [shot], within: 0.5) == nil)
+    }
+}
+
 @Test("The shot the playhead is inside is the one the detail bar opens on")
 func anchorIsTheShotYouAreIn() {
     let markers = [windowedMarker(at: 12), windowedMarker(at: 40, ordinal: 2)]
 
     // Mid-flight in the first shot.
-    #expect(ShotMarker.anchor(at: 11.4, in: markers)?.time == 12)
+    #expect(ShotMarker.shot(at: 11.4, in: markers)?.time == 12)
 
     // In the run-up, which is inside the padded window.
-    #expect(ShotMarker.anchor(at: 11.0, in: markers)?.time == 12)
+    #expect(ShotMarker.shot(at: 11.0, in: markers)?.time == 12)
 
     // Between shots: no shot to open on.
-    #expect(ShotMarker.anchor(at: 25, in: markers) == nil)
+    #expect(ShotMarker.shot(at: 25, in: markers) == nil)
 }
 
-@Test("Where windows overlap, the nearer key moment wins")
-func anchorPicksTheNearerShot() {
+@Test("Where windows overlap, the nearer anchor wins")
+func overlappingWindowsPickTheNearerAnchor() {
     let first = windowedMarker(at: 12)
     let second = windowedMarker(at: 12.9, ordinal: 2)
+    let markers = [first, second]
 
-    #expect(ShotMarker.anchor(at: 12.8, in: [first, second])?.time == 12.9)
-    #expect(ShotMarker.anchor(at: 12.1, in: [first, second])?.time == 12)
+    // Once the second shot has begun, that is the one being watched.
+    #expect(ShotMarker.shot(at: second.anchorTime + 0.2, in: markers)?.ordinal == 2)
+
+    // Before its window opens, only the first is in play.
+    #expect(ShotMarker.shot(at: first.anchorTime + 0.2, in: markers)?.ordinal == 1)
 }
 
-@Test("Every route to a shot lands in the same place")
-func landingIsShared() {
+@Test("A shot's tick and the place it takes you are the same moment")
+func anchorIsShared() {
     let shot = windowedMarker(at: 12)
 
-    // Tapping the bar, scrubbing onto it and the shot-to-shot buttons all read this, so
-    // they can't drift apart. Flipping `ShotMarker.landing` moves all three at once.
-    switch ShotMarker.landing {
+    // The tick's position, what a scrub snaps to and where the shot-to-shot buttons land
+    // all read this one value, so they can't drift apart — which they did when the tick
+    // sat on the crossing and a tap went to the run-up.
+    switch ShotMarker.anchor {
     case .keyMoment:
-        #expect(shot.landingTime == shot.time)
-    case .runUp:
-        #expect(shot.landingTime == shot.window.lowerBound)
+        #expect(shot.anchorTime == shot.time)
+    case .shotStart:
+        #expect(shot.anchorTime == shot.window.lowerBound)
+        // And the tick is now before the moment that settled the shot, not on it.
+        #expect(shot.anchorTime < shot.time)
     }
 }
 
@@ -235,14 +268,14 @@ func previousFromAShotGoesBack() {
     // The bug: landing on a shot puts the playhead on its key moment, which is *after*
     // its own window start — so a test written against window starts picked the shot you
     // were already standing on and the button did nothing.
-    let standingOnSecond = threeShots[1].landingTime
+    let standingOnSecond = threeShots[1].anchorTime
 
     #expect(ShotMarker.previous(before: standingOnSecond, in: threeShots)?.ordinal == 1)
 }
 
 @Test("Standing on a shot, the next button goes to the one after it")
 func nextFromAShotGoesForward() {
-    #expect(ShotMarker.next(after: threeShots[1].landingTime, in: threeShots)?.ordinal == 3)
+    #expect(ShotMarker.next(after: threeShots[1].anchorTime, in: threeShots)?.ordinal == 3)
 }
 
 @Test("Anywhere inside a shot counts as being on it, not before it")
@@ -263,7 +296,7 @@ func betweenShotsStepsToNearest() {
 
 @Test("The ends of the clip have nowhere further to go")
 func endsOfTheClipHaveNoNeighbour() {
-    #expect(ShotMarker.previous(before: threeShots[0].landingTime, in: threeShots) == nil)
-    #expect(ShotMarker.next(after: threeShots[2].landingTime, in: threeShots) == nil)
+    #expect(ShotMarker.previous(before: threeShots[0].anchorTime, in: threeShots) == nil)
+    #expect(ShotMarker.next(after: threeShots[2].anchorTime, in: threeShots) == nil)
     #expect(ShotMarker.next(after: 5, in: [])  == nil)
 }

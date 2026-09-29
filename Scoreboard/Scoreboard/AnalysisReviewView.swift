@@ -73,7 +73,7 @@ struct AnalysisReviewView: View {
 
     /// Whether the next re-analysis is watched. Remembered across runs and videos: it is
     /// a working preference — "I trust this setup" — not a property of one clip.
-    @AppStorage("watchesReanalysis") private var watchesReanalysis = false
+    @AppStorage("watchesReanalysis") private var watchesReanalysis = true
 
     private static let rates: [Float] = [0.25, 0.5, 1.0, 2.0]
 
@@ -167,7 +167,7 @@ struct AnalysisReviewView: View {
     /// The shot the playhead is inside, if any.
     private var activeMarker: ShotMarker? {
         guard let player else { return nil }
-        return ShotMarker.anchor(at: player.currentTime, in: markers)
+        return ShotMarker.shot(at: player.currentTime, in: markers)
     }
 
     private var activeAttempt: ShotAttempt? {
@@ -469,7 +469,7 @@ struct AnalysisReviewView: View {
         ShotWindowScrubber(
             marker: marker,
             currentTime: player.currentTime,
-            caretFraction: showsCaret ? marker.time / player.duration : nil,
+            caretFraction: showsCaret ? marker.anchorTime / player.duration : nil,
             onScrubBegan: { player.beginScrubbing() },
             onScrub: { player.scrub(to: $0) },
             onScrubEnded: { player.endScrubbing() }
@@ -854,9 +854,9 @@ struct AnalysisReviewView: View {
 
     private func jump(to marker: ShotMarker?, player: AnalysisReviewPlayer) {
         guard let marker else { return }
-        // Same landing point as tapping or scrubbing onto the shot — see
-        // `ShotMarker.landing`, which is the single place to change it.
-        player.jump(to: marker.landingTime)
+        // Same place as tapping or scrubbing onto the shot — see `ShotMarker.anchor`,
+        // which is the single place to change it.
+        player.jump(to: marker.anchorTime)
     }
 
     private func nextMarker(from time: Double) -> ShotMarker? {

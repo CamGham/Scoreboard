@@ -19,6 +19,8 @@ struct SavedGamesView<Header: View>: View {
 
     @State private var summaries: [SavedGameSummary] = []
 
+    @AppStorage("savedGamesSort") private var sort = SavedGameSort.analysed
+
     var body: some View {
         List {
             header
@@ -33,8 +35,11 @@ struct SavedGamesView<Header: View>: View {
                 .frame(minHeight: 220)
                 .libraryRow()
             } else {
-                ForEach(summaries) { summary in
-                    SavedGameListRow(summary: summary, store: store) {
+                sortControl
+                    .libraryRow()
+
+                ForEach(sort.sorted(summaries)) { summary in
+                    SavedGameListRow(summary: summary, store: store, sort: sort) {
                         delete(summary)
                     }
                 }
@@ -42,14 +47,57 @@ struct SavedGamesView<Header: View>: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .task { reload() }
+        .animation(.default, value: sort)
+        .task {
+            reload()
+            backfillCaptureDates()
+        }
         // Re-read when coming back from a detail view, since corrections there change
         // the totals shown here.
         .onAppear { reload() }
     }
 
+    private var sortControl: some View {
+        HStack {
+            Text("Saved games")
+                .font(.headline)
+
+            Spacer()
+
+            Menu {
+                Picker("Sort by", selection: $sort) {
+                    ForEach(SavedGameSort.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+            } label: {
+                Label(sort.title, systemImage: "arrow.up.arrow.down")
+                    .font(.subheadline)
+            }
+        }
+    }
+
     private func reload() {
         summaries = store.summaries()
+    }
+
+    /// Games saved before recording dates were kept don't have one. Fill them in from
+    /// Photos where access has already been granted, once, and write them back so it
+    /// needn't happen again.
+    private func backfillCaptureDates() {
+        let missing = summaries.filter { $0.capturedAt == nil }.map(\.assetIdentifier)
+        let found = VideoLibrary.captureDates(for: missing)
+        guard !found.isEmpty else { return }
+
+        for var summary in summaries {
+            guard summary.capturedAt == nil, let date = found[summary.assetIdentifier] else {
+                continue
+            }
+            summary.capturedAt = date
+            try? store.saveSummary(summary)
+        }
+
+        reload()
     }
 
     /// Removes everything stored for the video — every run, the user's corrections and
@@ -94,6 +142,7 @@ private extension View {
 private struct SavedGameListRow: View {
     let summary: SavedGameSummary
     let store: ShotStore
+    let sort: SavedGameSort
     let onDelete: () -> Void
 
     @State private var isConfirmingDelete = false
@@ -102,7 +151,7 @@ private struct SavedGameListRow: View {
         NavigationLink {
             SavedGameDetailView(summary: summary, store: store, onDelete: onDelete)
         } label: {
-            SavedGameRow(summary: summary)
+            SavedGameRow(summary: summary, sort: sort)
         }
         // Standard row, but over the screen's gradient rather than white.
         .listRowBackground(Color.clear)
@@ -129,6 +178,7 @@ private struct SavedGameListRow: View {
 
 private struct SavedGameRow: View {
     let summary: SavedGameSummary
+    let sort: SavedGameSort
 
     var body: some View {
         HStack(spacing: 14) {
@@ -142,10 +192,10 @@ private struct SavedGameRow: View {
             .frame(width: 52)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(summary.analysedAt, format: .dateTime.weekday(.wide).day().month())
+                Text(leadingDate, format: .dateTime.weekday(.wide).day().month())
                     .font(.headline)
 
-                Text(summary.analysedAt, format: .dateTime.hour().minute())
+                Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -169,6 +219,28 @@ private struct SavedGameRow: View {
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+
+    /// Leads with whichever date the list is ordered by, so the order reads true.
+    /// A game with no recording date falls back to when it was analysed.
+    private var leadingDate: Date {
+        sort.date(of: summary) ?? summary.analysedAt
+    }
+
+    /// The leading date's time, then the other date for context.
+    private var detail: String {
+        let time = leadingDate.formatted(.dateTime.hour().minute())
+        let short = Date.FormatStyle.dateTime.day().month()
+
+        switch sort {
+        case .analysed:
+            guard let captured = summary.capturedAt else { return time }
+            return "\(time) · Recorded \(captured.formatted(short))"
+        case .captured:
+            let analysed = "Analysed \(summary.analysedAt.formatted(short))"
+            guard summary.capturedAt != nil else { return "Recording date unknown · \(analysed)" }
+            return "\(time) · \(analysed)"
+        }
     }
 }
 

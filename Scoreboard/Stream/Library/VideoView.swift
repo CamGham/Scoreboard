@@ -21,6 +21,9 @@ struct VideoView: View {
     @State var asset: AVURLAsset?
     @State var assetIdentifier: String?
     @State var videoProcessor: VideoProcessor?
+
+    /// When the picked video was recorded, for ordering the library by game day.
+    @State var capturedAt: Date?
     
     @State var showLibrary = false
     @State var assetState = AssetState.unSelected
@@ -204,6 +207,8 @@ struct VideoView: View {
                 // rim means they never have to place it twice, and saved rulings are
                 // reapplied to attempts as they are detected.
                 if let assetIdentifier {
+                    capturedAt = await VideoLibrary.captureDate(for: assetIdentifier, asset: asset)
+
                     // Analysing again adds a run rather than replacing the last one, so
                     // say so before it happens.
                     existingRuns = store.runs(for: assetIdentifier)
@@ -503,7 +508,11 @@ struct VideoView: View {
         try? store.saveRun(run)
 
         // The library list reads summaries rather than parsing every run.
-        try? store.refreshSummary(for: assetIdentifier, attempts: attempts)
+        try? store.refreshSummary(
+            for: assetIdentifier,
+            attempts: attempts,
+            capturedAt: capturedAt
+        )
     }
 
     /// Persist a ruling as time-keyed ground truth, so it survives re-analysis.

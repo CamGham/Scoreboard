@@ -31,3 +31,58 @@ func deleteRemovesStoredVideo() throws {
     #expect(store.storedAssetIdentifiers().isEmpty)
     #expect(store.loadPlan(for: photosIdentifier).sections.isEmpty)
 }
+
+// MARK: - Recording dates
+
+private func summary(_ id: String, analysed: TimeInterval, captured: TimeInterval?) -> SavedGameSummary {
+    SavedGameSummary(
+        assetIdentifier: id,
+        analysedAt: Date(timeIntervalSince1970: analysed),
+        capturedAt: captured.map { Date(timeIntervalSince1970: $0) },
+        attempts: 0, makes: 0, reviewed: 0, agreed: 0
+    )
+}
+
+@Test("Sorting by recording date puts games without one last")
+func captureSortOrdersUndatedLast() {
+    let games = [
+        summary("undated-old", analysed: 100, captured: nil),
+        summary("recorded-early", analysed: 900, captured: 10),
+        summary("undated-new", analysed: 800, captured: nil),
+        summary("recorded-late", analysed: 200, captured: 50)
+    ]
+
+    #expect(SavedGameSort.captured.sorted(games).map(\.assetIdentifier) == [
+        "recorded-late", "recorded-early", "undated-new", "undated-old"
+    ])
+    #expect(SavedGameSort.analysed.sorted(games).map(\.assetIdentifier) == [
+        "recorded-early", "undated-new", "recorded-late", "undated-old"
+    ])
+}
+
+@Test("Refreshing a summary keeps the recording date")
+func refreshKeepsCaptureDate() throws {
+    let root = URL.temporaryDirectory.appending(path: UUID().uuidString)
+    let store = ShotStore(root: root)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let recorded = Date(timeIntervalSince1970: 1_000)
+    try store.refreshSummary(for: photosIdentifier, attempts: [], capturedAt: recorded)
+
+    // A correction in the detail view rewrites the summary without knowing the date.
+    try store.refreshSummary(for: photosIdentifier, attempts: [])
+
+    #expect(store.loadSummary(for: photosIdentifier)?.capturedAt == recorded)
+}
+
+@Test("Summaries saved before recording dates still load")
+func legacySummaryDecodes() throws {
+    let root = URL.temporaryDirectory.appending(path: UUID().uuidString)
+    let store = ShotStore(root: root)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try store.saveSummary(summary(photosIdentifier, analysed: 100, captured: nil))
+
+    let loaded = try #require(store.loadSummary(for: photosIdentifier))
+    #expect(loaded.capturedAt == nil)
+}

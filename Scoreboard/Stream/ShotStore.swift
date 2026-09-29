@@ -260,13 +260,21 @@ struct ShotStore {
     }
 
     /// Rewrite the library headline for a video from its current runs and rulings.
-    func refreshSummary(for assetIdentifier: String, attempts: [ShotAttempt]) throws {
+    ///
+    /// The recording date belongs to the video, not the runs, so it carries over from the
+    /// existing summary unless a new one is given.
+    func refreshSummary(
+        for assetIdentifier: String,
+        attempts: [ShotAttempt],
+        capturedAt: Date? = nil
+    ) throws {
         let stored = runs(for: assetIdentifier)
 
         try saveSummary(
             SavedGameSummary(
                 assetIdentifier: assetIdentifier,
                 analysedAt: stored.first?.analysedAt ?? Date(),
+                capturedAt: capturedAt ?? loadSummary(for: assetIdentifier)?.capturedAt,
                 attempts: attempts,
                 runCount: stored.count,
                 latestRunID: stored.first?.id

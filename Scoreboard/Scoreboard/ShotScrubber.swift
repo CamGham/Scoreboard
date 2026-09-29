@@ -75,34 +75,38 @@ struct ShotMarker: Identifiable, Equatable {
     ) -> ShotMarker? {
         guard radius > 0 else { return nil }
 
-        let nearest = markers.min { abs($0.time - time) < abs($1.time - time) }
-        guard let nearest, abs(nearest.time - time) <= radius else { return nil }
+        let nearest = markers.min { abs($0.anchorTime - time) < abs($1.anchorTime - time) }
+        guard let nearest, abs(nearest.anchorTime - time) <= radius else { return nil }
 
         return nearest
     }
 
-    /// Where landing on a shot puts the playhead.
+    /// Where a shot sits on the timeline.
     ///
-    /// Every route to a shot uses this — tapping the bar, scrubbing onto it, and the
-    /// shot-to-shot buttons — so they can't disagree with each other. Change this one
-    /// value to land on the run-up instead; nothing else needs touching.
+    /// This is one value on purpose. It places the tick on the bar, and it is where
+    /// tapping the bar, scrubbing onto a shot and the shot-to-shot buttons all land — a
+    /// tick you can tap that sends the playhead somewhere else is what made the bar feel
+    /// broken when the two disagreed.
     ///
-    /// It defaults to the key moment because that is what the marker sits on and what the
-    /// timeline cards show: the rim crossing that decided the shot. Reaching the run-up
-    /// from there is what the shot-window scrubber is for.
-    enum Landing {
-        /// The rim crossing — the end of the shot, and the frame that settles it.
+    /// Switch it in one place; nothing else needs touching.
+    enum Anchor {
+        /// The rim crossing: the moment that settles the shot, and the frame the timeline
+        /// cards are drawn on. Lands you on the outcome.
         case keyMoment
-        /// The start of the padded window, a beat before the release.
-        case runUp
+
+        /// The start of the padded window, a beat before the release. Lands you where the
+        /// shot begins, so playing from a tick shows the shot rather than its result.
+        case shotStart
     }
 
-    static let landing: Landing = .keyMoment
+    static let anchor: Anchor = .shotStart
 
-    var landingTime: Double {
-        switch Self.landing {
+    /// The moment this marker stands for: where its tick is drawn, what a scrub snaps to,
+    /// and where a jump lands.
+    var anchorTime: Double {
+        switch Self.anchor {
         case .keyMoment: return time
-        case .runUp: return window.lowerBound
+        case .shotStart: return window.lowerBound
         }
     }
 
@@ -114,18 +118,18 @@ struct ShotMarker: Identifiable, Equatable {
     /// start while the jump landed on its key moment, so standing on a shot satisfied its
     /// own "is before me" test and the button jumped to where you already were.
     static func previous(before time: Double, in markers: [ShotMarker]) -> ShotMarker? {
-        if let current = anchor(at: time, in: markers) {
+        if let current = shot(at: time, in: markers) {
             return markers.last { $0.ordinal < current.ordinal }
         }
-        return markers.last { $0.landingTime < time - adjacencyTolerance }
+        return markers.last { $0.anchorTime < time - adjacencyTolerance }
     }
 
     /// The shot after the playhead. The mirror of `previous(before:in:)`.
     static func next(after time: Double, in markers: [ShotMarker]) -> ShotMarker? {
-        if let current = anchor(at: time, in: markers) {
+        if let current = shot(at: time, in: markers) {
             return markers.first { $0.ordinal > current.ordinal }
         }
-        return markers.first { $0.landingTime > time + adjacencyTolerance }
+        return markers.first { $0.anchorTime > time + adjacencyTolerance }
     }
 
     /// Slack so that sitting exactly on a shot doesn't count as being before or after it.
@@ -133,11 +137,11 @@ struct ShotMarker: Identifiable, Equatable {
 
     /// The shot the playhead is inside, if any.
     ///
-    /// Overlapping windows are broken by whichever key moment is closest.
-    static func anchor(at time: Double, in markers: [ShotMarker]) -> ShotMarker? {
+    /// Overlapping windows are broken by whichever anchor is closest.
+    static func shot(at time: Double, in markers: [ShotMarker]) -> ShotMarker? {
         markers
             .filter { $0.window.contains(time) }
-            .min { abs($0.time - time) < abs($1.time - time) }
+            .min { abs($0.anchorTime - time) < abs($1.anchorTime - time) }
     }
 
     /// Build the marker set for a clip, in time order.
@@ -258,7 +262,7 @@ struct ShotScrubber: View {
 
                 ForEach(markers) { marker in
                     tick(for: marker)
-                        .position(x: x(for: marker.time, width: width), y: midY)
+                        .position(x: x(for: marker.anchorTime, width: width), y: midY)
                 }
 
                 playhead
@@ -490,9 +494,8 @@ struct ShotScrubber: View {
             snappedMarkerID = nil
         }
 
-        // Landing on a shot means landing where `ShotMarker.landing` says, so a scrub
-        // onto one and a tap on one end up in the same place.
-        let target = snapped?.landingTime ?? raw
+        // Landing where the tick is drawn — see `ShotMarker.anchor`.
+        let target = snapped?.anchorTime ?? raw
 
         if let editingRange, let activeEdge, let onEditRange {
             onEditRange(moving(editingRange, edge: activeEdge, to: target), activeEdge)
