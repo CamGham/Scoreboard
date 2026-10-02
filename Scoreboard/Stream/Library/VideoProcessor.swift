@@ -273,9 +273,16 @@ class VideoProcessor {
 
 
 fileprivate extension CIImage {
+    /// Shared by every preview frame. Building a context sets up a GPU device and its
+    /// caches, which cost about as much as a model pass when it was done per frame.
+    /// `CIContext` is thread-safe, so one instance serves every processor.
+    ///
+    /// Intermediates aren't cached because no two video frames are alike — keeping them
+    /// would only hold memory.
+    static let previewContext = CIContext(options: [.cacheIntermediates: false])
+
     var image: Image? {
-        let ciContext = CIContext()
-        guard let cgImage = ciContext.createCGImage(self, from: self.extent) else { return nil }
+        guard let cgImage = Self.previewContext.createCGImage(self, from: self.extent) else { return nil }
         return Image(decorative: cgImage, scale: 1)
     }
 }
