@@ -135,7 +135,11 @@ class VisionTracker {
     ///   seekable afterwards.
     func beginFrame(timeSeconds: Double? = nil) {
         frameCounter &+= 1
-        shotTracker.beginFrame(frameCounter, timeSeconds: timeSeconds)
+
+        // Committing the previous frame's sighting is where the shot detector runs.
+        PipelineSignpost.measure("Shot tracking") {
+            shotTracker.beginFrame(frameCounter, timeSeconds: timeSeconds)
+        }
     }
 
     /// Detect the ball for this frame, inside a crop around its predicted position.
@@ -145,13 +149,15 @@ class VisionTracker {
     func detectBall(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) {
         guard let ballDetector else { return }
 
-        let found = ballDetector.detect(
-            pixelBuffer: pixelBuffer,
-            orientation: orientation,
-            frameID: frameCounter,
-            history: shotTracker.ballHistory,
-            fit: shotTracker.currentFit
-        )
+        let found = PipelineSignpost.measure("Ball pass") {
+            ballDetector.detect(
+                pixelBuffer: pixelBuffer,
+                orientation: orientation,
+                frameID: frameCounter,
+                history: shotTracker.ballHistory,
+                fit: shotTracker.currentFit
+            )
+        }
 
         // Before the ball check: a frame without a ball still has players on it.
         playerProbe?.observe(
@@ -482,14 +488,19 @@ class VisionTracker {
     
     func makeObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
         let vnHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-        
-        try vnHandler.perform(requests)
+
+        // Includes the track merge, which runs in the request's completion handler.
+        try PipelineSignpost.measure("Player detect") {
+            try vnHandler.perform(requests)
+        }
     }
     
     
     func trackObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
         do {
-            try seqHandler.perform(trackingRequests.map{ $0.request }, on: pixelBuffer, orientation: orientation)
+            try PipelineSignpost.measure("Player tracking") {
+                try seqHandler.perform(trackingRequests.map{ $0.request }, on: pixelBuffer, orientation: orientation)
+            }
             
             var tempTrackedRects: [RectangleData] = []
             

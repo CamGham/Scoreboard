@@ -240,7 +240,10 @@ final class PlayerDetectionProbe {
             detections = sweepPlayers
             source = .sweep
         } else if let interval = stats.probeInterval, interval > 0, frameID % interval == 0 {
-            detections = detect(pixelBuffer: pixelBuffer, orientation: orientation)
+            // Only around the probe's own pass — a sweep sample costs nothing to time.
+            detections = PipelineSignpost.measure("Player probe") {
+                detect(pixelBuffer: pixelBuffer, orientation: orientation)
+            }
             source = .probe
         } else {
             return

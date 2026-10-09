@@ -213,7 +213,11 @@ class VideoProcessor {
     private(set) var currentFrameTime: Double?
 
     func readNextFrame() -> CVImageBuffer? {
-        guard let sampleBuffer = self.videoAssetReaderOutput.copyNextSampleBuffer(),
+        let sample = PipelineSignpost.measure("Decode") {
+            videoAssetReaderOutput.copyNextSampleBuffer()
+        }
+
+        guard let sampleBuffer = sample,
               let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             playback = .pause
 
@@ -239,8 +243,10 @@ class VideoProcessor {
         }
 
         if producesPreviewFrames {
-            let ciImage = CIImage(cvPixelBuffer: buff)
-            currentFrame = ciImage.oriented(orientation).image
+            PipelineSignpost.measure("Preview") {
+                let ciImage = CIImage(cvPixelBuffer: buff)
+                currentFrame = ciImage.oriented(orientation).image
+            }
         }
 
         CMSampleBufferInvalidate(sampleBuffer)
@@ -251,25 +257,27 @@ class VideoProcessor {
         do {
             while playback == .resume {
                 try autoreleasepool {
-                    guard let buf = readNextFrame() else {
-                        tracker.clear()
-                        return
+                    try PipelineSignpost.measure("Frame") {
+                        guard let buf = readNextFrame() else {
+                            tracker.clear()
+                            return
+                        }
+                        frames += 1
+                        tracker.beginFrame(timeSeconds: currentFrameTime)
+
+                        // The ball gets its own detection pass every frame, inside a crop
+                        // around its predicted position. Players keep the full-frame detect
+                        // plus track path on their existing cadence.
+                        tracker.detectBall(pixelBuffer: buf, orientation: orientation)
+
+                        if tracker.shouldPredict {
+                            try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
+                        } else {
+                            try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
+                        }
+
+                        onFrameProcessed?(currentFrameTime)
                     }
-                    frames += 1
-                    tracker.beginFrame(timeSeconds: currentFrameTime)
-
-                    // The ball gets its own detection pass every frame, inside a crop
-                    // around its predicted position. Players keep the full-frame detect
-                    // plus track path on their existing cadence.
-                    tracker.detectBall(pixelBuffer: buf, orientation: orientation)
-
-                    if tracker.shouldPredict {
-                        try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
-                    } else {
-                        try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
-                    }
-
-                    onFrameProcessed?(currentFrameTime)
                 }
             }
         } catch {

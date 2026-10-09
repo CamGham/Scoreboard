@@ -62,17 +62,19 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         guard let buf = sampleBuffer.imageBuffer else { return }
 
         do {
-            let orientation = exifOrientationFromDeviceOrientation()
-            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            tracker.beginFrame(timeSeconds: presentationTime.isValid ? presentationTime.seconds : nil)
-            tracker.detectBall(pixelBuffer: buf, orientation: orientation)
+            try PipelineSignpost.measure("Frame") {
+                let orientation = exifOrientationFromDeviceOrientation()
+                let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                tracker.beginFrame(timeSeconds: presentationTime.isValid ? presentationTime.seconds : nil)
+                tracker.detectBall(pixelBuffer: buf, orientation: orientation)
 
-            if tracker.shouldPredict {
-                tracker.shouldPredict = false
-                try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
-            } else if tracker.canObserve || dontCareAboutPerformance {
-                tracker.canObserve = false
-                try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
+                if tracker.shouldPredict {
+                    tracker.shouldPredict = false
+                    try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
+                } else if tracker.canObserve || dontCareAboutPerformance {
+                    tracker.canObserve = false
+                    try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
+                }
             }
         } catch {
             print("Failed to make observations")
