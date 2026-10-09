@@ -63,6 +63,18 @@ class VisionTracker {
     /// detector, and a decoy could still pull the moving crop onto itself.
     private var pendingExclusionZones: [ExclusionZone] = []
 
+    /// Measures how well per-frame detection finds players. Read-only as far as the rest
+    /// of the pipeline goes — see `PlayerDetectionProbe`.
+    private(set) var playerProbe: PlayerDetectionProbe?
+
+    /// How often the probe adds a full-frame pass of its own. Nil, the default, records
+    /// the ball detector's sweeps only and adds no work — right for the live camera.
+    /// Kept here as well as on the probe because the probe isn't built until the model
+    /// finishes loading, which may be after this is set.
+    var playerProbeInterval: Int? {
+        didSet { playerProbe?.probeInterval = playerProbeInterval }
+    }
+
     init() {
         print("DEBUG: TRACKER CREATED")
 
@@ -80,6 +92,10 @@ class VisionTracker {
                 setupVision(model: visionModel)
                 ballDetector = BallDetector(model: visionModel)
                 ballDetector?.exclusionZones = pendingExclusionZones
+                playerProbe = PlayerDetectionProbe(
+                    model: visionModel,
+                    probeInterval: playerProbeInterval
+                )
             }
         }
     }
@@ -129,13 +145,24 @@ class VisionTracker {
     func detectBall(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) {
         guard let ballDetector else { return }
 
-        guard let found = ballDetector.detect(
+        let found = ballDetector.detect(
             pixelBuffer: pixelBuffer,
             orientation: orientation,
             frameID: frameCounter,
             history: shotTracker.ballHistory,
             fit: shotTracker.currentFit
-        ) else { return }
+        )
+
+        // Before the ball check: a frame without a ball still has players on it.
+        playerProbe?.observe(
+            frameID: frameCounter,
+            sweepPlayers: ballDetector.lastSweepPlayers,
+            trackedPlayers: trackingRequests.count,
+            pixelBuffer: pixelBuffer,
+            orientation: orientation
+        )
+
+        guard let found else { return }
 
         shotTracker.ingestBall(
             boundingBox: found.boundingBox,

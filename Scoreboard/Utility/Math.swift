@@ -313,3 +313,15 @@ func median(_ values: [Double]) -> Double? {
         ? (sorted[mid - 1] + sorted[mid]) * 0.5
         : sorted[mid]
 }
+
+extension CGRect {
+    /// Area of overlap over area of union, 0 when the boxes don't touch.
+    func intersectionOverUnion(with other: CGRect) -> CGFloat {
+        let overlap = intersection(other)
+        guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else { return 0 }
+
+        let overlapArea = overlap.width * overlap.height
+        let unionArea = width * height + other.width * other.height - overlapArea
+        return unionArea > 0 ? overlapArea / unionArea : 0
+    }
+}

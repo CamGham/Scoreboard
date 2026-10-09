@@ -68,6 +68,9 @@ struct ShotTimelineView: View {
     /// Detection tally, so the moving crop can be judged against the full-frame sweep.
     var ballStats: BallDetectionStats?
 
+    /// How well per-frame detection found players, to judge it against the tracker.
+    var playerStats: PlayerDetectionStats?
+
     /// Supplies the still frame each card is drawn on. Nil for the live camera path,
     /// where there is no file to seek back into.
     var frameProvider: ShotFrameProvider?
@@ -89,6 +92,10 @@ struct ShotTimelineView: View {
                 
                 if ballStats != nil {
                     ballDetectionSection
+                }
+
+                if let playerStats, playerStats.sampledFrames > 0 {
+                    playerDetectionSection(playerStats)
                 }
                 
                 shotsSection
@@ -184,6 +191,39 @@ struct ShotTimelineView: View {
         }
     }
     
+    private func playerDetectionSection(_ stats: PlayerDetectionStats) -> some View {
+        Section {
+            LabeledContent(
+                "Frames sampled",
+                value: "\(stats.sampledFrames) (\(stats.sweepSamples) sweep, \(stats.probeSamples) probe)"
+            )
+            LabeledContent(
+                "Players per frame",
+                value: String(format: "%.1f detected · %.1f tracked", stats.meanPlayersDetected, stats.meanPlayersTracked)
+            )
+            LabeledContent(
+                "Frames with none",
+                value: String(format: "%.0f%%", stats.emptyFrameRate * 100)
+            )
+            LabeledContent(
+                "Persisted",
+                value: String(format: "%.0f%% of %d", stats.persistenceRate * 100, stats.pairedDetections)
+            )
+            LabeledContent(
+                "Count change",
+                value: String(format: "%.2f per sample", stats.meanCountChange)
+            )
+            LabeledContent(
+                "Below 0.6 floor",
+                value: String(format: "%.0f%% of boxes", stats.belowAcceptedShare * 100)
+            )
+        } header: {
+            Text("Player detection")
+        } footer: {
+            Text("Measures whether players could be detected every frame instead of tracked. Persisted is the share of players also found in the previous sample — low means boxes flicker. Sweeps only happen while the ball is lost, so probe samples are the fairer view of live play.")
+        }
+    }
+
     private var shotsSection: some View {
         Section("Shots") {
             if gameState.shotTimeline.isEmpty {

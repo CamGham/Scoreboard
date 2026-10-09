@@ -163,7 +163,7 @@ class VideoProcessor {
             firstFrame = ciImage.oriented(orientation).image
         }
         
-        return VideoProcessor(
+        let processor = VideoProcessor(
             videoAsset: videoAsset,
             videoTrack: videoTrack,
             videoReader: videoReader,
@@ -175,6 +175,14 @@ class VideoProcessor {
             nominalFrameRate: frameRate,
             producesPreviewFrames: producesPreviewFrames
         )
+
+        // Only whole-clip passes measure player detection: those are the runs that get
+        // saved with their stats, and a section re-analysis has no use for the extra pass.
+        if timeRange == nil {
+            processor.tracker.playerProbeInterval = PlayerDetectionProbe.defaultInterval
+        }
+
+        return processor
     }
 
     /// The orientation a track's preferred transform describes.

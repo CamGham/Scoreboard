@@ -93,6 +93,11 @@ final class BallDetector {
     private(set) var stats = BallDetectionStats()
     private(set) var lastMode: Mode = .searching
 
+    /// Every player the model returned on this frame's full-frame sweep, or nil when the
+    /// pass was cropped. The sweep finds them anyway; this keeps them for
+    /// `PlayerDetectionProbe` instead of throwing them away.
+    private(set) var lastSweepPlayers: [PlayerDetection]?
+
     init(model: VNCoreMLModel, config: BallROIPredictor.Config = BallROIPredictor.Config()) {
         self.model = model
         self.config = config
@@ -109,6 +114,7 @@ final class BallDetector {
         consecutiveMisses = 0
         stats = BallDetectionStats()
         lastMode = .searching
+        lastSweepPlayers = nil
     }
 
     /// Detect the ball for one frame.
@@ -146,9 +152,12 @@ final class BallDetector {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
         try? handler.perform([request])
 
+        let results = request.results as? [VNRecognizedObjectObservation] ?? []
+        lastSweepPlayers = roi == nil ? PlayerDetection.players(in: results) : nil
+
         let threshold = roi == nil ? fullFrameConfidence : croppedConfidence
 
-        let candidates = (request.results as? [VNRecognizedObjectObservation] ?? [])
+        let candidates = results
             .filter { $0.labels.first?.identifier == ObjectType.ball.rawValue }
             .filter { $0.confidence >= threshold }
             .filter { candidate in

@@ -294,6 +294,7 @@ struct SavedGameDetailView: View {
                 ShotTimelineView(
                     gameState: gameState,
                     ballStats: run?.ballStats,
+                    playerStats: run?.playerStats,
                     frameProvider: frameProvider,
                     asset: asset,
                     orientedVideoSize: orientedVideoSize

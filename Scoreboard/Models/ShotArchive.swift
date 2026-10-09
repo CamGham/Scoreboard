@@ -97,6 +97,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
     var configuration: RunConfiguration
     var attempts: [ShotAttempt]
     var ballStats: BallDetectionStats?
+    var playerStats: PlayerDetectionStats?
 
     init(
         id: UUID = UUID(),
@@ -104,7 +105,8 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         analysedAt: Date = Date(),
         configuration: RunConfiguration,
         attempts: [ShotAttempt],
-        ballStats: BallDetectionStats? = nil
+        ballStats: BallDetectionStats? = nil,
+        playerStats: PlayerDetectionStats? = nil
     ) {
         self.id = id
         self.assetIdentifier = assetIdentifier
@@ -112,6 +114,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         self.configuration = configuration
         self.attempts = attempts
         self.ballStats = ballStats
+        self.playerStats = playerStats
     }
 
     /// Header for the run index.
@@ -130,6 +133,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
     // current shape rather than discarding a user's existing analysis.
     private enum CodingKeys: String, CodingKey {
         case version, id, assetIdentifier, analysedAt, configuration, attempts, ballStats
+        case playerStats
         case detectorConfig
     }
 
@@ -142,6 +146,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         analysedAt = try container.decode(Date.self, forKey: .analysedAt)
         attempts = try container.decode([ShotAttempt].self, forKey: .attempts)
         ballStats = try container.decodeIfPresent(BallDetectionStats.self, forKey: .ballStats)
+        playerStats = try container.decodeIfPresent(PlayerDetectionStats.self, forKey: .playerStats)
 
         if let configuration = try container.decodeIfPresent(
             RunConfiguration.self, forKey: .configuration
@@ -167,6 +172,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         try container.encode(configuration, forKey: .configuration)
         try container.encode(attempts, forKey: .attempts)
         try container.encodeIfPresent(ballStats, forKey: .ballStats)
+        try container.encodeIfPresent(playerStats, forKey: .playerStats)
     }
 }
 
