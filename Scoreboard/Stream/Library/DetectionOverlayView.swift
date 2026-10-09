@@ -26,28 +26,8 @@ struct DetectionOverlayView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ForEach(processor.tracker.rects) { rectData in
-                let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                Rectangle()
-                    .stroke(rectData.colour, lineWidth: 2)
-                    .frame(width: adjustedRect.width, height: adjustedRect.height)
-                    .position(x: adjustedRect.midX, y: adjustedRect.midY)
+            PlayerTracksOverlay(tracks: processor.tracker.playerTracks)
 
-                Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                    .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                    .foregroundColor(.red)
-            }
-            ForEach(processor.tracker.trackedRects) { rectData in
-                let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                Rectangle()
-                    .stroke(rectData.colour, lineWidth: 2)
-                    .frame(width: adjustedRect.width, height: adjustedRect.height)
-                    .position(x: adjustedRect.midX, y: adjustedRect.midY)
-                
-                Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                    .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                    .foregroundColor(.red)
-            }
             let gameState = processor.tracker.gameState
 
             // The ball is detected rather than tracked, so it is
@@ -158,5 +138,47 @@ struct DetectionOverlayView: View {
 
     private func normalizedToView(_ point: CGPoint, viewSize: CGSize) -> CGPoint {
         CGPoint(x: point.x * viewSize.width, y: (1 - point.y) * viewSize.height)
+    }
+}
+
+/// The tracked players, drawn over the frame. Shared by the analysis overlay and the
+/// live camera so the two can't drift apart.
+///
+/// A coasting player — not matched on the latest pass, carried on its prediction — is
+/// drawn faded and dashed, so a box that is only a guess doesn't look like a sighting.
+struct PlayerTracksOverlay: View {
+    let tracks: [PlayerTrack]
+
+    var body: some View {
+        GeometryReader { geometry in
+            ForEach(tracks) { track in
+                let rect = viewRect(for: track.box, in: geometry.size)
+                let isCoasting = track.state == .coasting
+
+                Rectangle()
+                    .stroke(
+                        Color.green.opacity(isCoasting ? 0.45 : 1),
+                        style: StrokeStyle(lineWidth: 2, dash: isCoasting ? [6, 4] : [])
+                    )
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+
+                Text("P\(track.id)")
+                    .font(.caption.bold())
+                    .foregroundStyle(Color.green.opacity(isCoasting ? 0.45 : 1))
+                    .position(x: rect.midX, y: rect.minY - 10)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Vision space (origin bottom-left) to view space (origin top-left).
+    private func viewRect(for box: CGRect, in size: CGSize) -> CGRect {
+        CGRect(
+            x: box.minX * size.width,
+            y: (1 - box.maxY) * size.height,
+            width: box.width * size.width,
+            height: box.height * size.height
+        )
     }
 }

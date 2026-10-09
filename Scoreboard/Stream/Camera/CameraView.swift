@@ -23,41 +23,8 @@ struct CameraView: View {
         .task {
             await camera.start()
         }
-        .onReceive(camera.predictionTimer, perform: { _ in
-            camera.tracker.shouldPredict = true
-        })
-        .onReceive(camera.observationTimer, perform: { _ in
-            camera.tracker.canObserve = true
-        })
         .overlay {
-            GeometryReader { geometry in
-                ForEach(camera.tracker.rects) { rectData in
-                    let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                    Rectangle()
-                        .stroke(rectData.colour, lineWidth: 2)
-                        .frame(width: adjustedRect.width, height: adjustedRect.height)
-                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
-                    Text("\(rectData.label) \(rectData.id)")
-                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                        .foregroundColor(.red)
-                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                        .foregroundColor(.red)
-                }
-                ForEach(camera.tracker.trackedRects) { rectData in
-                    let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                    Rectangle()
-                        .stroke(rectData.colour, lineWidth: 2)
-                        .frame(width: adjustedRect.width, height: adjustedRect.height)
-                        .position(x: adjustedRect.midX, y: adjustedRect.midY)
-                    Text("\(rectData.label) \(rectData.id)")
-                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                        .foregroundColor(.red)
-                    Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                        .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                        .foregroundColor(.red)
-                }
-            }
+            PlayerTracksOverlay(tracks: camera.tracker.playerTracks)
         }
         .overlay(alignment: .topLeading) {
             Button("Close") {
@@ -69,12 +36,6 @@ struct CameraView: View {
         }
     }
     
-    func adjustRectForView(rect: CGRect, viewSize: CGSize) -> CGRect {
-        let scale = CGAffineTransform.identity.scaledBy(x: viewSize.width, y: viewSize.height)
-        let transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -viewSize.height)
-        return rect.applying(scale).applying(transform)
-    }
-
     func startActivity() {
         // Does this need to be created outside of view
         

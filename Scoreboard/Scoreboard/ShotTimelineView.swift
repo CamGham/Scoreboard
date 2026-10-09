@@ -195,12 +195,19 @@ struct ShotTimelineView: View {
         Section {
             LabeledContent(
                 "Frames sampled",
-                value: "\(stats.sampledFrames) (\(stats.sweepSamples) sweep, \(stats.probeSamples) probe)"
+                value: "\(stats.sampledFrames) (\(stats.sweepSamples) sweep, \(stats.passSamples) pass)"
             )
             LabeledContent(
                 "Players per frame",
                 value: String(format: "%.1f detected · %.1f tracked", stats.meanPlayersDetected, stats.meanPlayersTracked)
             )
+            if let tracking = stats.tracking {
+                LabeledContent("Players followed", value: "\(tracking.tracksConfirmed)")
+                LabeledContent(
+                    "Mean time followed",
+                    value: String(format: "%.0f frames", tracking.meanTrackLifetimeFrames)
+                )
+            }
             LabeledContent(
                 "Frames with none",
                 value: String(format: "%.0f%%", stats.emptyFrameRate * 100)
@@ -218,9 +225,13 @@ struct ShotTimelineView: View {
                 value: String(format: "%.0f%% of boxes", stats.belowAcceptedShare * 100)
             )
         } header: {
-            Text("Player detection")
+            Text("Player tracking")
         } footer: {
-            Text("Measures whether players could be detected every frame instead of tracked. Persisted is the share of players also found in the previous sample — low means boxes flicker. Sweeps only happen while the ball is lost, so probe samples are the fairer view of live play.")
+            if stats.tracking != nil {
+                Text("Players followed should match the number of people in shot — more means identities broke and restarted. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
+            } else {
+                Text("From before the player tracker: \"tracked\" is Apple's object tracker. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
+            }
         }
     }
 

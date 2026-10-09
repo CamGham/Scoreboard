@@ -1,5 +1,5 @@
 //
-//  PlayerDetectionProbe.swift
+//  PlayerDetection.swift
 //  Scoreboard
 //
 //  Created by Cam Graham on 02/10/2026.
@@ -7,7 +7,6 @@
 
 import Foundation
 import Vision
-import CoreVideo
 
 /// One player box the model returned, in full-frame Vision normalized space.
 struct PlayerDetection: Equatable {
@@ -31,20 +30,21 @@ struct PlayerSample: Equatable {
     let boxes: [CGRect]
 }
 
-/// How well per-frame detection finds players, measured before anything is built on it.
+/// How well detection finds players, and how well the tracker holds on to them.
 ///
-/// Players are tracked with `VNTrackObjectRequest` today. Replacing that with detection
-/// on every frame — as was done for the ball — only pays off if the detector finds the
-/// same players frame after frame. These numbers answer that without ground truth:
+/// First recorded to decide whether detection should replace `VNTrackObjectRequest` for
+/// players; kept since as a health check on `PlayerTracker`. None of it needs ground
+/// truth:
 ///
 /// - **Count** — how many players a frame yields, and how often it yields none.
 /// - **Persistence** — the share of players that were also there in the previous
-///   sample. Low persistence means boxes flicker, which an association layer would have
-///   to coast through.
-/// - **Confidence** — whether the 0.6 floor the tracker seeds from throws away players
-///   that a lower floor would keep.
-/// - **Tracker comparison** — how many tracks the current path held on the same
-///   frames, so the two can be judged side by side.
+///   sample. Low persistence means boxes flicker, which the tracker has to coast through.
+/// - **Confidence** — how many boxes fall below the 0.6 floor a track starts from.
+/// - **Tracker comparison** — how many players the tracker showed on the same frames.
+/// - **Track lifetimes** (`tracking`) — whether identities hold or keep restarting.
+///
+/// Runs saved before the switch have no `tracking`; their tracked numbers are Apple's
+/// tracker's.
 struct PlayerDetectionStats: Codable, Equatable {
 
     /// The floor the tracker seeds new tracks from. Count and persistence are judged at
@@ -73,17 +73,17 @@ struct PlayerDetectionStats: Codable, Equatable {
     enum Source {
         /// Came free with the ball detector's full-frame sweep.
         case sweep
-        /// An extra full-frame pass run only to take this measurement.
-        case probe
+        /// A scheduled player detection pass.
+        case pass
     }
 
-    /// How often a probe pass ran, if at all. Recorded because it changes how
+    /// Every how many frames a scheduled pass ran. Recorded because it changes how
     /// representative the sample is: sweeps only happen while the ball is lost.
-    var probeInterval: Int?
+    var passInterval: Int?
 
     var sampledFrames = 0
     var sweepSamples = 0
-    var probeSamples = 0
+    var passSamples = 0
 
     /// Accepted players summed over every sampled frame.
     var acceptedDetections = 0
@@ -103,11 +103,39 @@ struct PlayerDetectionStats: Codable, Equatable {
     /// Change in player count between paired samples, summed.
     var countChangeSum = 0
 
-    /// Player tracks the current path held on the sampled frames, summed.
+    /// Players the tracker showed on the sampled frames, summed.
     var trackedPlayerSum = 0
 
-    init(probeInterval: Int? = nil) {
-        self.probeInterval = probeInterval
+    /// How long the tracker's identities lasted. Nil for runs from before `PlayerTracker`.
+    var tracking: TrackingSummary?
+
+    struct TrackingSummary: Codable, Equatable {
+        var config: PlayerTracker.Config
+
+        /// Tracks that became confirmed. Ideally the number of people who were in shot;
+        /// more means identities broke and restarted.
+        var tracksConfirmed = 0
+
+        /// Frames spanned by those tracks between them, from first sighting to last —
+        /// those still running counted up to the moment the stats were taken.
+        var confirmedTrackFrames = 0
+
+        var meanTrackLifetimeFrames: Double {
+            tracksConfirmed > 0 ? Double(confirmedTrackFrames) / Double(tracksConfirmed) : 0
+        }
+    }
+
+    // The first runs called scheduled passes "probe" passes. Keep reading them.
+    private enum CodingKeys: String, CodingKey {
+        case passInterval = "probeInterval"
+        case passSamples = "probeSamples"
+        case sampledFrames, sweepSamples, acceptedDetections, countHistogram
+        case confidenceBuckets, pairedFrames, pairedDetections, persistedDetections
+        case countChangeSum, trackedPlayerSum, tracking
+    }
+
+    init(passInterval: Int? = nil) {
+        self.passInterval = passInterval
     }
 
     // MARK: Derived
@@ -157,7 +185,7 @@ struct PlayerDetectionStats: Codable, Equatable {
         sampledFrames += 1
         switch source {
         case .sweep: sweepSamples += 1
-        case .probe: probeSamples += 1
+        case .pass: passSamples += 1
         }
 
         for detection in detections where detection.confidence >= Self.floorConfidence {
@@ -187,89 +215,5 @@ struct PlayerDetectionStats: Codable, Equatable {
         }
 
         return PlayerSample(frameID: frameID, boxes: accepted)
-    }
-}
-
-/// Collects `PlayerDetectionStats` alongside a normal analysis pass.
-///
-/// Measurement only — nothing downstream reads what it finds. The ball detector's
-/// full-frame sweeps are used whenever they happen, since they cost nothing extra. They
-/// are a biased sample, though: a sweep means the ball was lost, which skews towards
-/// dead-ball moments. So every `probeInterval` frames, if no sweep ran, the probe runs
-/// its own full-frame pass to sample live play too.
-final class PlayerDetectionProbe {
-
-    /// Used for whole-clip analyses. A pass on every third frame keeps the extra cost
-    /// down while leaving samples close enough together to pair.
-    static let defaultInterval = 3
-
-    private let model: VNCoreMLModel
-
-    private(set) var stats: PlayerDetectionStats
-    private var previous: PlayerSample?
-
-    /// Every how many frames to run a pass of its own when the ball pass didn't sweep.
-    var probeInterval: Int? {
-        get { stats.probeInterval }
-        set { stats.probeInterval = newValue }
-    }
-
-    /// - Parameter probeInterval: nil records sweeps only and never adds a pass.
-    init(model: VNCoreMLModel, probeInterval: Int?) {
-        self.model = model
-        self.stats = PlayerDetectionStats(probeInterval: probeInterval)
-    }
-
-    /// The probe's own full-frame request for this frame, or nil when it doesn't need
-    /// one — off-interval, or the ball pass is sweeping and will find the players anyway.
-    ///
-    /// Performed alongside the frame's other requests, so it shares their handler.
-    func makeRequest(frameID: Int, ballPassSweeps: Bool) -> VNCoreMLRequest? {
-        guard !ballPassSweeps,
-              let interval = stats.probeInterval, interval > 0,
-              frameID % interval == 0 else { return nil }
-
-        // Same crop option as every other pass, so the probe sees what a per-frame
-        // player detector would.
-        let request = VNCoreMLRequest(model: model)
-        request.imageCropAndScaleOption = .scaleFit
-        return request
-    }
-
-    /// Look at one frame, once its requests have been performed.
-    ///
-    /// - Parameters:
-    ///   - sweepPlayers: players from this frame's ball sweep, or nil if the ball pass
-    ///     was cropped.
-    ///   - probeRequest: the request from `makeRequest`, if there was one.
-    ///   - trackedPlayers: player tracks the current path is holding.
-    func observe(
-        frameID: Int,
-        sweepPlayers: [PlayerDetection]?,
-        probeRequest: VNCoreMLRequest?,
-        trackedPlayers: Int
-    ) {
-        let detections: [PlayerDetection]
-        let source: PlayerDetectionStats.Source
-
-        if let sweepPlayers {
-            detections = sweepPlayers
-            source = .sweep
-        } else if let probeRequest {
-            detections = PlayerDetection.players(
-                in: probeRequest.results as? [VNRecognizedObjectObservation] ?? []
-            )
-            source = .probe
-        } else {
-            return
-        }
-
-        previous = stats.record(
-            frameID: frameID,
-            detections: detections,
-            previous: previous,
-            trackedPlayers: trackedPlayers,
-            source: source
-        )
     }
 }

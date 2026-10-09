@@ -163,7 +163,7 @@ class VideoProcessor {
             firstFrame = ciImage.oriented(orientation).image
         }
         
-        let processor = VideoProcessor(
+        return VideoProcessor(
             videoAsset: videoAsset,
             videoTrack: videoTrack,
             videoReader: videoReader,
@@ -175,14 +175,6 @@ class VideoProcessor {
             nominalFrameRate: frameRate,
             producesPreviewFrames: producesPreviewFrames
         )
-
-        // Only whole-clip passes measure player detection: those are the runs that get
-        // saved with their stats, and a section re-analysis has no use for the extra pass.
-        if timeRange == nil {
-            processor.tracker.playerProbeInterval = PlayerDetectionProbe.defaultInterval
-        }
-
-        return processor
     }
 
     /// The orientation a track's preferred transform describes.
@@ -254,34 +246,24 @@ class VideoProcessor {
     }
     
     func play() async {
-        do {
-            while playback == .resume {
-                try autoreleasepool {
-                    try PipelineSignpost.measure("Frame") {
-                        guard let buf = readNextFrame() else {
-                            tracker.clear()
-                            return
-                        }
-                        frames += 1
-                        tracker.beginFrame(timeSeconds: currentFrameTime)
-
-                        // The ball gets its own detection pass every frame, inside a crop
-                        // around its predicted position. Players keep the full-frame detect
-                        // plus track path on their existing cadence — the detect shares the
-                        // ball pass's handler, the tracking runs on its own.
-                        let redetectsPlayers = tracker.shouldPredict
-                        tracker.detect(pixelBuffer: buf, orientation: orientation, includingPlayers: redetectsPlayers)
-
-                        if !redetectsPlayers {
-                            try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
-                        }
-
-                        onFrameProcessed?(currentFrameTime)
+        while playback == .resume {
+            autoreleasepool {
+                PipelineSignpost.measure("Frame") {
+                    guard let buf = readNextFrame() else {
+                        tracker.clear()
+                        return
                     }
+                    frames += 1
+                    tracker.beginFrame(timeSeconds: currentFrameTime)
+
+                    // The ball gets a detection pass every frame, inside a crop around its
+                    // predicted position; the players get one every few frames on the same
+                    // handler, and are carried forward on their predictions in between.
+                    tracker.detect(pixelBuffer: buf, orientation: orientation)
+
+                    onFrameProcessed?(currentFrameTime)
                 }
             }
-        } catch {
-            
         }
     }
     

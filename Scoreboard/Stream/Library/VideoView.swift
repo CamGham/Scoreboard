@@ -503,7 +503,7 @@ struct VideoView: View {
             configuration: videoProcessor.tracker.currentConfiguration(),
             attempts: attempts,
             ballStats: videoProcessor.tracker.ballDetector?.stats,
-            playerStats: videoProcessor.tracker.playerProbe?.stats
+            playerStats: videoProcessor.tracker.playerStats
         )
 
         try? store.saveRun(run)

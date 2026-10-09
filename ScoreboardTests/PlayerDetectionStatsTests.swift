@@ -48,7 +48,7 @@ func bucketsConfidence() {
         ],
         previous: nil,
         trackedPlayers: 0,
-        source: .probe
+        source: .pass
     )
 
     #expect(stats.confidenceBuckets == [1, 1, 2])
@@ -60,7 +60,7 @@ func crowdedFrameIsCapped() {
     let crowd = (0..<14).map { player(at: CGFloat($0) * 0.07, 0.1) }
 
     var stats = PlayerDetectionStats()
-    stats.record(frameID: 1, detections: crowd, previous: nil, trackedPlayers: 6, source: .probe)
+    stats.record(frameID: 1, detections: crowd, previous: nil, trackedPlayers: 6, source: .pass)
 
     #expect(stats.countHistogram.last == 1)
     #expect(stats.acceptedDetections == 14)
@@ -82,11 +82,11 @@ func movedPlayerPersists() {
     var stats = PlayerDetectionStats()
     let first = stats.record(
         frameID: 3, detections: [player(at: 0.40, 0.2)],
-        previous: nil, trackedPlayers: 1, source: .probe
+        previous: nil, trackedPlayers: 1, source: .pass
     )
     stats.record(
         frameID: 6, detections: [player(at: 0.42, 0.2)],
-        previous: first, trackedPlayers: 1, source: .probe
+        previous: first, trackedPlayers: 1, source: .pass
     )
 
     #expect(stats.pairedFrames == 1)
@@ -99,7 +99,7 @@ func newPlayerDoesNotPersist() {
     var stats = PlayerDetectionStats()
     let first = stats.record(
         frameID: 3, detections: [player(at: 0.1, 0.2)],
-        previous: nil, trackedPlayers: 1, source: .probe
+        previous: nil, trackedPlayers: 1, source: .pass
     )
     stats.record(
         frameID: 4, detections: [player(at: 0.1, 0.2), player(at: 0.7, 0.2)],
@@ -116,11 +116,11 @@ func distantSamplesAreNotPaired() {
     var stats = PlayerDetectionStats()
     let first = stats.record(
         frameID: 3, detections: [player(at: 0.1, 0.2)],
-        previous: nil, trackedPlayers: 1, source: .probe
+        previous: nil, trackedPlayers: 1, source: .pass
     )
     stats.record(
         frameID: 3 + PlayerDetectionStats.maxPairGap + 1, detections: [player(at: 0.1, 0.2)],
-        previous: first, trackedPlayers: 1, source: .probe
+        previous: first, trackedPlayers: 1, source: .pass
     )
 
     #expect(stats.pairedFrames == 0)
@@ -160,8 +160,8 @@ func intersectionOverUnionBounds() {
 
 @Test("Player stats survive a save and load")
 func playerStatsRoundTrip() throws {
-    var stats = PlayerDetectionStats(probeInterval: 3)
-    stats.record(frameID: 3, detections: [player(at: 0.1, 0.1)], previous: nil, trackedPlayers: 2, source: .probe)
+    var stats = PlayerDetectionStats(passInterval: 3)
+    stats.record(frameID: 3, detections: [player(at: 0.1, 0.1)], previous: nil, trackedPlayers: 2, source: .pass)
 
     let run = AnalysisRun(
         assetIdentifier: "asset",
@@ -184,4 +184,31 @@ func runWithoutPlayerStatsLoads() throws {
 
     let decoded = try JSONDecoder().decode(AnalysisRun.self, from: JSONEncoder().encode(run))
     #expect(decoded.playerStats == nil)
+}
+
+@Test("Stats with a tracking summary survive a save and load")
+func trackingSummaryRoundTrip() throws {
+    var stats = PlayerDetectionStats(passInterval: 3)
+    stats.tracking = .init(config: PlayerTracker.Config(), tracksConfirmed: 3, confirmedTrackFrames: 360)
+
+    let decoded = try JSONDecoder().decode(PlayerDetectionStats.self, from: JSONEncoder().encode(stats))
+    #expect(decoded == stats)
+    #expect(decoded.tracking?.meanTrackLifetimeFrames == 120)
+}
+
+@Test("Stats saved by the probe, before the tracker, still load")
+func probeEraStatsLoad() throws {
+    // Exactly the shape the probe wrote: its own names for passes, and no tracking.
+    let json = """
+    {"probeInterval":3,"sampledFrames":10,"sweepSamples":4,"probeSamples":6,
+     "acceptedDetections":16,"countHistogram":[0,4,6,0,0,0,0,0,0,0,0],
+     "confidenceBuckets":[1,2,16],"pairedFrames":8,"pairedDetections":13,
+     "persistedDetections":12,"countChangeSum":2,"trackedPlayerSum":12}
+    """
+
+    let stats = try JSONDecoder().decode(PlayerDetectionStats.self, from: Data(json.utf8))
+    #expect(stats.passInterval == 3)
+    #expect(stats.passSamples == 6)
+    #expect(stats.tracking == nil)
+    #expect(stats.meanPlayersTracked == 1.2)
 }

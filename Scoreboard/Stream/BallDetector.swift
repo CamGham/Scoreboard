@@ -59,12 +59,11 @@ struct BallDetectionStats: Codable, Equatable {
 
 /// Finds the ball by detecting inside a moving crop rather than tracking it visually.
 ///
-/// The ball used to ride the same `VNTrackObjectRequest` path as the players. That is a
-/// poor fit: correlation tracking has no motion model, and a small motion-blurred ball
-/// is its worst case — the pipeline carried explicit workarounds for tracks latching
-/// onto background. A ballistic fit is a far better predictor, so the ball is now
-/// predicted and re-detected every frame instead of tracked, which also hands a tracking
-/// slot back to the players.
+/// The ball used to be followed with `VNTrackObjectRequest`. That is a poor fit:
+/// correlation tracking has no motion model, and a small motion-blurred ball is its worst
+/// case — the pipeline carried explicit workarounds for tracks latching onto background.
+/// A ballistic fit is a far better predictor, so the ball is predicted and re-detected
+/// every frame instead. (The players later went the same way — see `PlayerTracker`.)
 final class BallDetector {
 
     enum Mode: Equatable {
@@ -93,11 +92,6 @@ final class BallDetector {
     private(set) var stats = BallDetectionStats()
     private(set) var lastMode: Mode = .searching
 
-    /// Every player the model returned on this frame's full-frame sweep, or nil when the
-    /// pass was cropped. The sweep finds them anyway; this keeps them for
-    /// `PlayerDetectionProbe` instead of throwing them away.
-    private(set) var lastSweepPlayers: [PlayerDetection]?
-
     init(model: VNCoreMLModel, config: BallROIPredictor.Config = BallROIPredictor.Config()) {
         self.model = model
         self.config = config
@@ -114,7 +108,6 @@ final class BallDetector {
         consecutiveMisses = 0
         stats = BallDetectionStats()
         lastMode = .searching
-        lastSweepPlayers = nil
     }
 
     /// One frame's ball detection, between building its request and reading the result.
@@ -123,7 +116,8 @@ final class BallDetector {
     /// a handler converts and scales the frame once for everything performed on it.
     struct Pass {
         let request: VNCoreMLRequest
-        /// The crop searched, or nil for a full-frame sweep.
+        /// The crop searched, or nil for a full-frame sweep. A sweep's results hold every
+        /// class, so the players and rim in them can be used too.
         let roi: CGRect?
         let predictedCentre: CGPoint?
 
@@ -172,7 +166,6 @@ final class BallDetector {
         let predictedCentre = pass.predictedCentre
 
         let results = pass.request.results as? [VNRecognizedObjectObservation] ?? []
-        lastSweepPlayers = roi == nil ? PlayerDetection.players(in: results) : nil
 
         let threshold = roi == nil ? fullFrameConfidence : croppedConfidence
 
