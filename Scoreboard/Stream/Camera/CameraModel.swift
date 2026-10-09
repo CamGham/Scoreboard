@@ -66,12 +66,15 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
                 let orientation = exifOrientationFromDeviceOrientation()
                 let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 tracker.beginFrame(timeSeconds: presentationTime.isValid ? presentationTime.seconds : nil)
-                tracker.detectBall(pixelBuffer: buf, orientation: orientation)
 
-                if tracker.shouldPredict {
-                    tracker.shouldPredict = false
-                    try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
-                } else if tracker.canObserve || dontCareAboutPerformance {
+                // Cleared before detecting, as it always has been on this path: the
+                // re-detect's completion handler reads it.
+                let redetectsPlayers = tracker.shouldPredict
+                if redetectsPlayers { tracker.shouldPredict = false }
+
+                tracker.detect(pixelBuffer: buf, orientation: orientation, includingPlayers: redetectsPlayers)
+
+                if !redetectsPlayers, tracker.canObserve || dontCareAboutPerformance {
                     tracker.canObserve = false
                     try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
                 }

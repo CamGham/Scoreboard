@@ -117,17 +117,28 @@ final class BallDetector {
         lastSweepPlayers = nil
     }
 
-    /// Detect the ball for one frame.
+    /// One frame's ball detection, between building its request and reading the result.
     ///
-    /// - Returns: the ball's bounding box in *full-frame* Vision normalized space, with
-    ///   its confidence, or nil when nothing was found.
-    func detect(
+    /// Split in two so the request can share a handler with the frame's other requests:
+    /// a handler converts and scales the frame once for everything performed on it.
+    struct Pass {
+        let request: VNCoreMLRequest
+        /// The crop searched, or nil for a full-frame sweep.
+        let roi: CGRect?
+        let predictedCentre: CGPoint?
+
+        var isSweep: Bool { roi == nil }
+    }
+
+    /// Build this frame's request: a crop around the predicted position, or a sweep.
+    /// Perform `request` on the frame, then hand the pass to `finish(_:)`.
+    func makePass(
         pixelBuffer: CVImageBuffer,
         orientation: CGImagePropertyOrientation,
         frameID: Int,
         history: [BallObservation],
         fit: MotionFit?
-    ) -> (boundingBox: CGRect, confidence: Float)? {
+    ) -> Pass {
 
         let aspect = orientedAspect(of: pixelBuffer, orientation: orientation)
         let mode = chooseMode(history: history, fit: fit, frameID: frameID, aspect: aspect)
@@ -149,10 +160,18 @@ final class BallDetector {
             roi = rect
         }
 
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-        try? handler.perform([request])
+        return Pass(request: request, roi: roi, predictedCentre: predictedCentre)
+    }
 
-        let results = request.results as? [VNRecognizedObjectObservation] ?? []
+    /// Read the ball out of a performed pass.
+    ///
+    /// - Returns: the ball's bounding box in *full-frame* Vision normalized space, with
+    ///   its confidence, or nil when nothing was found.
+    func finish(_ pass: Pass) -> (boundingBox: CGRect, confidence: Float)? {
+        let roi = pass.roi
+        let predictedCentre = pass.predictedCentre
+
+        let results = pass.request.results as? [VNRecognizedObjectObservation] ?? []
         lastSweepPlayers = roi == nil ? PlayerDetection.players(in: results) : nil
 
         let threshold = roi == nil ? fullFrameConfidence : croppedConfidence

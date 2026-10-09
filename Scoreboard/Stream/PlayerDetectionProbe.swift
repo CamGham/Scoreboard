@@ -220,18 +220,34 @@ final class PlayerDetectionProbe {
         self.stats = PlayerDetectionStats(probeInterval: probeInterval)
     }
 
-    /// Look at one frame.
+    /// The probe's own full-frame request for this frame, or nil when it doesn't need
+    /// one — off-interval, or the ball pass is sweeping and will find the players anyway.
+    ///
+    /// Performed alongside the frame's other requests, so it shares their handler.
+    func makeRequest(frameID: Int, ballPassSweeps: Bool) -> VNCoreMLRequest? {
+        guard !ballPassSweeps,
+              let interval = stats.probeInterval, interval > 0,
+              frameID % interval == 0 else { return nil }
+
+        // Same crop option as every other pass, so the probe sees what a per-frame
+        // player detector would.
+        let request = VNCoreMLRequest(model: model)
+        request.imageCropAndScaleOption = .scaleFit
+        return request
+    }
+
+    /// Look at one frame, once its requests have been performed.
     ///
     /// - Parameters:
     ///   - sweepPlayers: players from this frame's ball sweep, or nil if the ball pass
     ///     was cropped.
+    ///   - probeRequest: the request from `makeRequest`, if there was one.
     ///   - trackedPlayers: player tracks the current path is holding.
     func observe(
         frameID: Int,
         sweepPlayers: [PlayerDetection]?,
-        trackedPlayers: Int,
-        pixelBuffer: CVImageBuffer,
-        orientation: CGImagePropertyOrientation
+        probeRequest: VNCoreMLRequest?,
+        trackedPlayers: Int
     ) {
         let detections: [PlayerDetection]
         let source: PlayerDetectionStats.Source
@@ -239,11 +255,10 @@ final class PlayerDetectionProbe {
         if let sweepPlayers {
             detections = sweepPlayers
             source = .sweep
-        } else if let interval = stats.probeInterval, interval > 0, frameID % interval == 0 {
-            // Only around the probe's own pass — a sweep sample costs nothing to time.
-            detections = PipelineSignpost.measure("Player probe") {
-                detect(pixelBuffer: pixelBuffer, orientation: orientation)
-            }
+        } else if let probeRequest {
+            detections = PlayerDetection.players(
+                in: probeRequest.results as? [VNRecognizedObjectObservation] ?? []
+            )
             source = .probe
         } else {
             return
@@ -256,20 +271,5 @@ final class PlayerDetectionProbe {
             trackedPlayers: trackedPlayers,
             source: source
         )
-    }
-
-    private func detect(
-        pixelBuffer: CVImageBuffer,
-        orientation: CGImagePropertyOrientation
-    ) -> [PlayerDetection] {
-        // Same crop option as every other pass, so the probe sees what a per-frame
-        // player detector would.
-        let request = VNCoreMLRequest(model: model)
-        request.imageCropAndScaleOption = .scaleFit
-
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-        try? handler.perform([request])
-
-        return PlayerDetection.players(in: request.results as? [VNRecognizedObjectObservation] ?? [])
     }
 }

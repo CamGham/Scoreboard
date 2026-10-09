@@ -142,30 +142,62 @@ class VisionTracker {
         }
     }
 
-    /// Detect the ball for this frame, inside a crop around its predicted position.
+    /// Run this frame's detection: the ball pass, plus the probe's pass and a full player
+    /// re-detect when either is due — all through one handler.
     ///
-    /// Must be called once per frame, after `beginFrame()`. Independent of the player
-    /// tracking path — the two no longer interfere.
-    func detectBall(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) {
+    /// A handler converts and scales the frame once and shares it between everything
+    /// performed on it. Separate handlers each redo that work, which measured at ~9 ms
+    /// per extra pass on an iPhone 15 Plus.
+    ///
+    /// Must be called once per frame, after `beginFrame()`.
+    /// - Parameter includingPlayers: also run the full player detection that seeds the
+    ///   player tracks. Its results land through the request's completion handler.
+    func detect(
+        pixelBuffer: CVImageBuffer,
+        orientation: CGImagePropertyOrientation,
+        includingPlayers: Bool
+    ) {
         guard let ballDetector else { return }
 
-        let found = PipelineSignpost.measure("Ball pass") {
-            ballDetector.detect(
-                pixelBuffer: pixelBuffer,
-                orientation: orientation,
-                frameID: frameCounter,
-                history: shotTracker.ballHistory,
-                fit: shotTracker.currentFit
-            )
+        let ballPass = ballDetector.makePass(
+            pixelBuffer: pixelBuffer,
+            orientation: orientation,
+            frameID: frameCounter,
+            history: shotTracker.ballHistory,
+            fit: shotTracker.currentFit
+        )
+        let probeRequest = playerProbe?.makeRequest(
+            frameID: frameCounter,
+            ballPassSweeps: ballPass.isSweep
+        )
+
+        var frameRequests: [VNRequest] = [ballPass.request]
+        if let probeRequest { frameRequests.append(probeRequest) }
+        if includingPlayers { frameRequests += requests }
+
+        // Read before performing: a re-detect rebuilds the tracks in its completion
+        // handler, and the probe compares against what the tracker held coming in.
+        let trackedPlayers = trackingRequests.count
+
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
+        do {
+            try PipelineSignpost.measure(Self.signpostName(probe: probeRequest != nil, players: includingPlayers)) {
+                try handler.perform(frameRequests)
+            }
+        } catch {
+            // Each request keeps whatever results it got, so carry on with those rather
+            // than losing the frame.
+            print("Detection failed: \(error)")
         }
+
+        let found = ballDetector.finish(ballPass)
 
         // Before the ball check: a frame without a ball still has players on it.
         playerProbe?.observe(
             frameID: frameCounter,
             sweepPlayers: ballDetector.lastSweepPlayers,
-            trackedPlayers: trackingRequests.count,
-            pixelBuffer: pixelBuffer,
-            orientation: orientation
+            probeRequest: probeRequest,
+            trackedPlayers: trackedPlayers
         )
 
         guard let found else { return }
@@ -184,6 +216,17 @@ class VisionTracker {
                 confidence: found.confidence,
                 colour: .orange
             )
+        }
+    }
+
+    /// Named by what shared the handler, so each mix can be compared in Instruments —
+    /// the cost of an extra request is the gap between "Detect: ball" and the others.
+    private static func signpostName(probe: Bool, players: Bool) -> StaticString {
+        switch (probe, players) {
+        case (false, false): "Detect: ball"
+        case (true, false): "Detect: ball + probe"
+        case (false, true): "Detect: ball + players"
+        case (true, true): "Detect: ball + probe + players"
         }
     }
 
@@ -483,16 +526,6 @@ class VisionTracker {
         
         let iou = intersectionArea / unionArea
         return iou
-    }
-    
-    
-    func makeObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
-        let vnHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-
-        // Includes the track merge, which runs in the request's completion handler.
-        try PipelineSignpost.measure("Player detect") {
-            try vnHandler.perform(requests)
-        }
     }
     
     

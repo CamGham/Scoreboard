@@ -267,12 +267,12 @@ class VideoProcessor {
 
                         // The ball gets its own detection pass every frame, inside a crop
                         // around its predicted position. Players keep the full-frame detect
-                        // plus track path on their existing cadence.
-                        tracker.detectBall(pixelBuffer: buf, orientation: orientation)
+                        // plus track path on their existing cadence — the detect shares the
+                        // ball pass's handler, the tracking runs on its own.
+                        let redetectsPlayers = tracker.shouldPredict
+                        tracker.detect(pixelBuffer: buf, orientation: orientation, includingPlayers: redetectsPlayers)
 
-                        if tracker.shouldPredict {
-                            try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
-                        } else {
+                        if !redetectsPlayers {
                             try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
                         }
 
