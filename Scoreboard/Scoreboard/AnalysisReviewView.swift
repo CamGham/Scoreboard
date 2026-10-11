@@ -189,6 +189,12 @@ struct AnalysisReviewView: View {
                 ZStack(alignment: .topLeading) {
                     PlayerLayerView(player: player.player)
 
+                    // Unlike the shot path, possession matters between shots too, so the
+                    // ring is drawn the whole way through.
+                    PossessionRingOverlay(possession: gameState.possession, time: player.currentTime)
+                        .frame(width: content.width, height: content.height)
+                        .offset(x: content.minX, y: content.minY)
+
                     // The overlay only appears while a shot is on screen. Drawing it the
                     // whole way through would leave a stale path hanging over footage it
                     // has nothing to do with.

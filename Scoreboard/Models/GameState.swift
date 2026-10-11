@@ -82,6 +82,13 @@ final class GameState {
     /// Frame of the most recent made basket, for a score flash in the UI.
     private(set) var lastMadeFrame: Int?
 
+    /// Who held the ball, frame by frame, for drawing in replay.
+    ///
+    /// Handed over once — when an analysis finishes, or a saved run is loaded — rather
+    /// than streamed: the record grows every frame, and nothing replays while an
+    /// analysis is still running.
+    private(set) var possession: PossessionRecord?
+
     // Convenience accessors so views don't have to reach through `snapshot`.
     var ballHistory: [BallObservation] { snapshot.ballHistory }
     var rim: HoopGeometry? { snapshot.rim }
@@ -263,6 +270,12 @@ final class GameState {
         shotTimeline = matched.filter { $0.result == .made || $0.result == .missed }
         abandonedAttempts = matched.filter { $0.result == .abandoned }
         lastMadeFrame = shotTimeline.last(where: { $0.result == .made })?.endFrame
+        possession = run.possession
+    }
+
+    /// Hand over a finished analysis's possession record.
+    func setPossession(_ record: PossessionRecord?) {
+        possession = record
     }
 
     func reset() {
@@ -270,5 +283,6 @@ final class GameState {
         shotTimeline.removeAll()
         abandonedAttempts.removeAll()
         lastMadeFrame = nil
+        possession = nil
     }
 }

@@ -236,3 +236,46 @@ func runWithoutPossessionLoads() throws {
     let decoded = try JSONDecoder().decode(AnalysisRun.self, from: JSONEncoder().encode(run))
     #expect(decoded.possession == nil)
 }
+
+// MARK: - Replay lookup
+
+@Test("Playback finds the holder at a moment between stored frames")
+func lookUpByTime() throws {
+    // Frames 1–3 held by player 1, stamped at frame / 30 seconds.
+    let tracker = oneHolding()
+
+    // Between frames 2 and 3: the latest entry at or before is frame 2.
+    let holder = try #require(tracker.record.frame(atTime: 2.5 / 30))
+    #expect(holder.frameID == 2)
+    #expect(holder.playerID == 1)
+}
+
+@Test("Playback shows nobody before the first holder or once the ball has gone loose")
+func lookUpByTimeWhenLoose() {
+    var tracker = oneHolding()
+    feed(&tracker, frames: 4...12, ball: nowhere)
+
+    #expect(tracker.record.frame(atTime: 0.5 / 30) == nil)
+    // Frame 3 is the last held one; 0.1 s later the ball is clearly loose.
+    #expect(tracker.record.frame(atTime: 3.0 / 30 + 0.05) != nil)
+    #expect(tracker.record.frame(atTime: 3.0 / 30 + 0.15) == nil)
+}
+
+@MainActor
+@Test("A loaded run's possession reaches the game state, and a reset clears it")
+func gameStateCarriesPossession() {
+    let record = oneHolding().record
+    let run = AnalysisRun(
+        assetIdentifier: "asset",
+        configuration: RunConfiguration(shotDetector: ShotDetectorConfig()),
+        attempts: [],
+        possession: record
+    )
+
+    let state = GameState()
+    state.load(run: run, truth: GroundTruthDocument(assetIdentifier: "asset"))
+    #expect(state.possession == record)
+
+    state.reset()
+    #expect(state.possession == nil)
+}

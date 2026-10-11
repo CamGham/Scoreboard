@@ -90,6 +90,31 @@ struct PossessionRecord: Codable, Equatable {
         return found
     }
 
+    /// The holder at a moment in the media, for drawing during playback.
+    ///
+    /// Playback times rarely land exactly on a stored frame, so this takes the latest
+    /// entry at or before `time`. Loose frames have no entry, so when that entry is
+    /// older than `maxAge` the ball was loose then and there is no holder.
+    func frame(atTime time: Double, maxAge: Double = 0.1) -> PossessionFrame? {
+        var low = 0
+        var high = frames.count - 1
+        var found: Int?
+        while low <= high {
+            let mid = (low + high) / 2
+            if (frames[mid].timeSeconds ?? -.infinity) <= time {
+                found = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+
+        guard let found, let stamped = frames[found].timeSeconds, time - stamped <= maxAge else {
+            return nil
+        }
+        return frames[found]
+    }
+
     /// The holder on `frameID`, or nil if nobody held the ball then.
     func frame(at frameID: Int) -> PossessionFrame? {
         var low = 0

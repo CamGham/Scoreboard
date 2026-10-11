@@ -118,7 +118,8 @@ struct ShotTimelineView: View {
                     asset: asset,
                     orientedVideoSize: orientedVideoSize,
                     onDismiss: { replaying = nil },
-                    onVerdict: { gameState.setVerdict($0, for: attempt.id) }
+                    onVerdict: { gameState.setVerdict($0, for: attempt.id) },
+                    possession: gameState.possession
                 )
             }
         }

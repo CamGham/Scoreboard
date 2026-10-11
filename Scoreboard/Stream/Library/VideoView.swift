@@ -295,8 +295,9 @@ struct VideoView: View {
         // The reader has run out of frames: the numbers are final, so save them and hand
         // the user the reviewable version of the clip.
         .onChange(of: videoProcessor?.isComplete ?? false) { _, finished in
-            guard finished else { return }
+            guard finished, let videoProcessor else { return }
             saveRun()
+            videoProcessor.tracker.gameState.setPossession(videoProcessor.tracker.possession)
             showAnalysisReview = true
         }
         .fullScreenCover(isPresented: $showAnalysisReview) {
