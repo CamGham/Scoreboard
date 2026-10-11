@@ -90,6 +90,13 @@ class VisionTracker {
             }
         }
 
+        // Runs on the frame-processing thread while a sighting is committed, which is
+        // where the possession record is written — so it is read on the same thread.
+        shotTracker.locateShooter = { [weak self] attempt in
+            guard let self, let openedAt = attempt.trajectory.last?.frameID else { return nil }
+            return ShooterLocator.locate(in: self.possessionTracker.record, openedAt: openedAt)
+        }
+
         Task {
             await visionModel = try ObjectDetector.createDetector()
             if let visionModel {

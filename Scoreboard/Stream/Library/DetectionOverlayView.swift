@@ -28,7 +28,8 @@ struct DetectionOverlayView: View {
         GeometryReader { geometry in
             PlayerTracksOverlay(
                 tracks: processor.tracker.playerTracks,
-                holderID: processor.tracker.ballHolderID
+                holderID: processor.tracker.ballHolderID,
+                shooterID: processor.tracker.gameState.currentAttempt?.shooter?.playerID
             )
 
             let gameState = processor.tracker.gameState
@@ -156,23 +157,28 @@ struct PlayerTracksOverlay: View {
     /// The track holding the ball, if any.
     var holderID: Int?
 
+    /// Whoever took the shot now in flight. Labelled, and drawn orange like the holder:
+    /// the ball is theirs until someone else takes it.
+    var shooterID: Int?
+
     var body: some View {
         GeometryReader { geometry in
             ForEach(tracks) { track in
                 let rect = viewRect(for: track.box, in: geometry.size)
                 let isCoasting = track.state == .coasting
-                let colour = (track.id == holderID ? Color.orange : Color.green)
+                let isFeatured = track.id == holderID || track.id == shooterID
+                let colour = (isFeatured ? Color.orange : Color.green)
                     .opacity(isCoasting ? 0.45 : 1)
 
                 Rectangle()
                     .stroke(
                         colour,
-                        style: StrokeStyle(lineWidth: track.id == holderID ? 3 : 2, dash: isCoasting ? [6, 4] : [])
+                        style: StrokeStyle(lineWidth: isFeatured ? 3 : 2, dash: isCoasting ? [6, 4] : [])
                     )
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
 
-                Text("P\(track.id)")
+                Text(track.id == shooterID ? "P\(track.id) · Shooter" : "P\(track.id)")
                     .font(.caption.bold())
                     .foregroundStyle(colour)
                     .position(x: rect.midX, y: rect.minY - 10)

@@ -24,7 +24,11 @@ struct CameraView: View {
             await camera.start()
         }
         .overlay {
-            PlayerTracksOverlay(tracks: camera.tracker.playerTracks, holderID: camera.tracker.ballHolderID)
+            PlayerTracksOverlay(
+                tracks: camera.tracker.playerTracks,
+                holderID: camera.tracker.ballHolderID,
+                shooterID: camera.tracker.gameState.currentAttempt?.shooter?.playerID
+            )
         }
         .overlay(alignment: .topLeading) {
             Button("Close") {

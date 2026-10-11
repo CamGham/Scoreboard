@@ -100,6 +100,11 @@ struct ShotAttempt: Codable, Identifiable, Equatable {
     /// The user's ruling, if they have given one.
     var userVerdict: UserVerdict?
 
+    /// Who took the shot and where from, read from possession when the attempt opened.
+    /// Nil when nobody clearly had the ball just before — including attempts picked up
+    /// late — and for runs from before it was recorded.
+    var shooter: ShooterSighting? = nil
+
     /// The verdict that counts — the user's where they gave one, else the detector's.
     var effectiveResult: Result {
         switch userVerdict {
@@ -445,6 +450,11 @@ struct ShotDetector {
         // Horizontally over the hoop.
         let reach = rim.horizontalRadius * config.rimZoneWidthInRimRadii
         return abs(ball.x - rim.center.x) <= reach
+    }
+
+    /// Record who took the attempt now in flight.
+    mutating func attachShooter(_ shooter: ShooterSighting) {
+        currentAttempt?.shooter = shooter
     }
 
     private mutating func openAttempt(rim: HoopGeometry, late: Bool) -> ShotEvent {

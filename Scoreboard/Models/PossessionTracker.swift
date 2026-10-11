@@ -72,6 +72,24 @@ struct PossessionRecord: Codable, Equatable {
         return result
     }
 
+    /// Index of the latest entry on or before `frameID` — the last time anyone held the
+    /// ball up to then.
+    func lastIndex(atOrBefore frameID: Int) -> Int? {
+        var low = 0
+        var high = frames.count - 1
+        var found: Int?
+        while low <= high {
+            let mid = (low + high) / 2
+            if frames[mid].frameID <= frameID {
+                found = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return found
+    }
+
     /// The holder on `frameID`, or nil if nobody held the ball then.
     func frame(at frameID: Int) -> PossessionFrame? {
         var low = 0

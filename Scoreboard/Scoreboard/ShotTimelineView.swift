@@ -139,6 +139,10 @@ struct ShotTimelineView: View {
                 value: String(format: "%.0f%%", gameState.stats.fieldGoalPercentage)
             )
             LabeledContent("Points", value: "\(gameState.stats.points)")
+            LabeledContent(
+                "Shooter found",
+                value: "\(gameState.shotTimeline.filter { $0.shooter != nil }.count) of \(gameState.shotTimeline.count)"
+            )
         } header: {
             Text("Totals")
         } footer: {

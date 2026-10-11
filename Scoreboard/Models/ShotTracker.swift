@@ -150,10 +150,25 @@ final class ShotTracker {
         let events = detector.process(observation: observation, rim: rimTracker.geometry)
 
         for event in events {
-            onEvent?(event)
+            onEvent?(attachingShooter(to: event))
         }
 
         publishSnapshot(frameID: observation.frameID)
+    }
+
+    /// Asked who took an attempt as it opens. Set by the owner of the possession record;
+    /// nil leaves attempts without a shooter.
+    var locateShooter: ((ShotAttempt) -> ShooterSighting?)?
+
+    /// Look up the shooter of an attempt that has just opened, and keep it on the
+    /// detector's in-flight copy so it is still there when the attempt resolves.
+    private func attachingShooter(to event: ShotEvent) -> ShotEvent {
+        guard case .attemptStarted(var attempt) = event,
+              let shooter = locateShooter?(attempt) else { return event }
+
+        detector.attachShooter(shooter)
+        attempt.shooter = shooter
+        return .attemptStarted(attempt)
     }
 
     private func publishSnapshot(frameID: Int) {
