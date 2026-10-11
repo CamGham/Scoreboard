@@ -97,7 +97,11 @@ struct ShotTimelineView: View {
                 if let playerStats, playerStats.sampledFrames > 0 {
                     playerDetectionSection(playerStats)
                 }
-                
+
+                if let appearance = playerStats?.tracking?.appearance, appearance.comparisons > 0 {
+                    appearanceSection(appearance)
+                }
+
                 shotsSection
                 
                 if !gameState.abandonedAttempts.isEmpty {
@@ -197,6 +201,41 @@ struct ShotTimelineView: View {
         }
     }
     
+    private func appearanceSection(_ summary: AppearanceSeparation.Summary) -> some View {
+        Section {
+            LabeledContent("Comparisons", value: "\(summary.comparisons)")
+            ForEach(AppearanceSeparation.Cue.allCases, id: \.self) { cue in
+                let score = summary.score(for: cue)
+                LabeledContent(
+                    Self.title(for: cue),
+                    value: score.compared > 0
+                        ? String(format: "%.0f%% of %d", score.accuracy * 100, score.compared)
+                        : "Not measured"
+                )
+            }
+            LabeledContent(
+                "All together",
+                value: String(format: "%.0f%%", summary.combined.accuracy * 100)
+            )
+        } header: {
+            Text("Telling players apart")
+        } footer: {
+            Text("Each clear sample of a player is checked against that player's recent look and the other players' seen on the same frame. 50% is a coin flip; near 100% means the cue tells them apart. Height is judged against what's typical for that spot on court.")
+        }
+    }
+
+    private static func title(for cue: AppearanceSeparation.Cue) -> String {
+        switch cue {
+        case .head: "Head (hair)"
+        case .torso: "Torso"
+        case .shorts: "Shorts"
+        case .legs: "Legs"
+        case .feet: "Feet (shoes)"
+        case .height: "Height"
+        case .build: "Build"
+        }
+    }
+
     private func playerDetectionSection(_ stats: PlayerDetectionStats) -> some View {
         Section {
             LabeledContent(

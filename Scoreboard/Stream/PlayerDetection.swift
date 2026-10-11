@@ -124,6 +124,10 @@ struct PlayerDetectionStats: Codable, Equatable {
         /// picked, and for runs from before identities.
         var identity: IdentityTracker.Summary?
 
+        /// How well each appearance cue told the players apart. Measured alongside
+        /// identities, so nil when no format was picked.
+        var appearance: AppearanceSeparation.Summary?
+
         var meanTrackLifetimeFrames: Double {
             tracksConfirmed > 0 ? Double(confirmedTrackFrames) / Double(tracksConfirmed) : 0
         }
