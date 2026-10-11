@@ -66,6 +66,10 @@ struct VideoView: View {
     /// False until the user has picked how to run this pass.
     @State var hasStartedAnalysis = false
 
+    /// How many people are on court, picked on the start card. Nil leaves players as
+    /// tracks, without identities.
+    @State var gameFormat: GameFormat?
+
     /// When the pass started, for the rate the progress view reports.
     @State var analysisStartedAt: Date?
 
@@ -143,6 +147,7 @@ struct VideoView: View {
                             AnalysisStartCard(
                                 clipDuration: clipDuration,
                                 hasRim: videoProcessor.tracker.gameState.rim != nil,
+                                format: $gameFormat,
                                 onWatch: { startAnalysis(watching: true) },
                                 // Kept wired up though the card no longer offers it —
                                 // see `AnalysisStartCard.runWithoutWatchingChoice`.
@@ -297,7 +302,10 @@ struct VideoView: View {
         .onChange(of: videoProcessor?.isComplete ?? false) { _, finished in
             guard finished, let videoProcessor else { return }
             saveRun()
-            videoProcessor.tracker.gameState.setPossession(videoProcessor.tracker.possession)
+            videoProcessor.tracker.gameState.setPlayerRecords(
+                possession: videoProcessor.tracker.possession,
+                identities: videoProcessor.tracker.identities
+            )
             showAnalysisReview = true
         }
         .fullScreenCover(isPresented: $showAnalysisReview) {
@@ -440,6 +448,7 @@ struct VideoView: View {
         guard let videoProcessor else { return }
 
         hasStartedAnalysis = true
+        videoProcessor.tracker.setFormat(gameFormat)
         setPreview(watching)
         resume(videoProcessor)
     }
@@ -505,7 +514,8 @@ struct VideoView: View {
             attempts: attempts,
             ballStats: videoProcessor.tracker.ballDetector?.stats,
             playerStats: videoProcessor.tracker.playerStats,
-            possession: videoProcessor.tracker.possession
+            possession: videoProcessor.tracker.possession,
+            identities: videoProcessor.tracker.identities
         )
 
         try? store.saveRun(run)

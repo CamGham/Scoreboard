@@ -21,7 +21,8 @@ struct PlayerTrack: Identifiable, Equatable {
         case coasting
     }
 
-    /// Stable for as long as the track lives. Shown as "P\(id)".
+    /// Stable for as long as the track lives. Shown as "P\(id)" when the run has no
+    /// identities; otherwise `IdentityTracker` says which player it is.
     let id: Int
 
     /// Current estimate: the detection's box smoothed on a matched frame, the predicted

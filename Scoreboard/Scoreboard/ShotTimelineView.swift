@@ -119,7 +119,8 @@ struct ShotTimelineView: View {
                     orientedVideoSize: orientedVideoSize,
                     onDismiss: { replaying = nil },
                     onVerdict: { gameState.setVerdict($0, for: attempt.id) },
-                    possession: gameState.possession
+                    possession: gameState.possession,
+                    identities: gameState.identities
                 )
             }
         }
@@ -212,6 +213,11 @@ struct ShotTimelineView: View {
                     "Mean time followed",
                     value: String(format: "%.0f frames", tracking.meanTrackLifetimeFrames)
                 )
+                if let identity = tracking.identity {
+                    LabeledContent("Players identified", value: "\(identity.playersSeen) of \(identity.playerCount)")
+                    LabeledContent("Relinked", value: "\(identity.relinks)")
+                    LabeledContent("Tracks with nobody", value: "\(identity.unassignedTracks)")
+                }
             }
             LabeledContent(
                 "Frames with none",
@@ -232,7 +238,9 @@ struct ShotTimelineView: View {
         } header: {
             Text("Player tracking")
         } footer: {
-            if stats.tracking != nil {
+            if stats.tracking?.identity != nil {
+                Text("Players followed counts tracks, which break and restart. Relinked is how many of those breaks were joined back up to a player; tracks with nobody were left over once every player was taken. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
+            } else if stats.tracking != nil {
                 Text("Players followed should match the number of people in shot — more means identities broke and restarted. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
             } else {
                 Text("From before the player tracker: \"tracked\" is Apple's object tracker. Persisted is the share of players also found in the previous sample; low means boxes flicker.")

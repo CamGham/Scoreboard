@@ -103,6 +103,10 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
     /// tracked.
     var possession: PossessionRecord?
 
+    /// Which track was which player. Nil when no format was picked, and for runs from
+    /// before identities.
+    var identities: IdentityRecord?
+
     init(
         id: UUID = UUID(),
         assetIdentifier: String,
@@ -111,7 +115,8 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         attempts: [ShotAttempt],
         ballStats: BallDetectionStats? = nil,
         playerStats: PlayerDetectionStats? = nil,
-        possession: PossessionRecord? = nil
+        possession: PossessionRecord? = nil,
+        identities: IdentityRecord? = nil
     ) {
         self.id = id
         self.assetIdentifier = assetIdentifier
@@ -121,6 +126,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         self.ballStats = ballStats
         self.playerStats = playerStats
         self.possession = possession
+        self.identities = identities
     }
 
     /// Header for the run index.
@@ -139,7 +145,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
     // current shape rather than discarding a user's existing analysis.
     private enum CodingKeys: String, CodingKey {
         case version, id, assetIdentifier, analysedAt, configuration, attempts, ballStats
-        case playerStats, possession
+        case playerStats, possession, identities
         case detectorConfig
     }
 
@@ -154,6 +160,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         ballStats = try container.decodeIfPresent(BallDetectionStats.self, forKey: .ballStats)
         playerStats = try container.decodeIfPresent(PlayerDetectionStats.self, forKey: .playerStats)
         possession = try container.decodeIfPresent(PossessionRecord.self, forKey: .possession)
+        identities = try container.decodeIfPresent(IdentityRecord.self, forKey: .identities)
 
         if let configuration = try container.decodeIfPresent(
             RunConfiguration.self, forKey: .configuration
@@ -181,6 +188,7 @@ struct AnalysisRun: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(ballStats, forKey: .ballStats)
         try container.encodeIfPresent(playerStats, forKey: .playerStats)
         try container.encodeIfPresent(possession, forKey: .possession)
+        try container.encodeIfPresent(identities, forKey: .identities)
     }
 }
 

@@ -33,6 +33,10 @@ class VisionTracker {
     /// `playerTracks`. Nil while the ball is loose or nobody has it.
     var ballHolderID: Int?
 
+    /// Which player each of `playerTracks` is, by track id, published alongside them.
+    /// Nil when no format was picked; a track missing from it has nobody yet.
+    var playerLabels: [Int: String]?
+
     /// Main-actor game state for the UI to read.
     let gameState = GameState()
 
@@ -56,6 +60,10 @@ class VisionTracker {
 
     /// Decides who has the ball on every frame — see `PossessionTracker`.
     @ObservationIgnored private(set) var possessionTracker = PossessionTracker()
+
+    /// Puts the player tracks onto the people on court — see `IdentityTracker`. Nil until
+    /// a format is picked, which leaves tracks as they were.
+    @ObservationIgnored private(set) var identityTracker: IdentityTracker?
 
     /// Presentation time of the frame open now, for stamping what is recorded on it.
     @ObservationIgnored private var currentFrameTime: Double?
@@ -207,9 +215,11 @@ class VisionTracker {
         )
 
         if publishesOverlay {
+            let labels = identityTracker?.labels(for: visible)
             Task { @MainActor in
                 self.playerTracks = visible
                 self.ballHolderID = holder
+                self.playerLabels = labels
             }
         }
 
@@ -239,6 +249,16 @@ class VisionTracker {
     /// Who held the ball, frame by frame, for saving with the run.
     var possession: PossessionRecord { possessionTracker.record }
 
+    /// Which track was which player, for saving with the run. Nil when no format was
+    /// picked.
+    var identities: IdentityRecord? { identityTracker?.record }
+
+    /// Set how many people are on court, which turns on identities. Must be called before
+    /// the first frame: a player numbered partway through would be numbered wrongly.
+    func setFormat(_ format: GameFormat?) {
+        identityTracker = format.map { IdentityTracker(format: $0) }
+    }
+
     /// Detection and tracking numbers for the run so far, for saving with it.
     var playerStats: PlayerDetectionStats {
         var stats = playerDetectionStats
@@ -250,7 +270,8 @@ class VisionTracker {
             config: playerTracker.config,
             tracksConfirmed: playerTracker.tracksConfirmed,
             confirmedTrackFrames: playerTracker.endedTrackFrames
-                + live.reduce(0) { $0 + $1.lastSeenFrame - $1.firstFrame }
+                + live.reduce(0) { $0 + $1.lastSeenFrame - $1.firstFrame },
+            identity: identityTracker?.summary
         )
         return stats
     }
@@ -267,6 +288,12 @@ class VisionTracker {
         }
 
         let visible = playerTracker.visibleTracks
+
+        if identityTracker != nil {
+            PipelineSignpost.measure("Identity") {
+                identityTracker?.update(frameID: frameCounter, tracks: visible)
+            }
+        }
 
         if let detections {
             previousPlayerSample = playerDetectionStats.record(

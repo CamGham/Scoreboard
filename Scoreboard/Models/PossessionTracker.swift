@@ -13,7 +13,7 @@ struct PossessionFrame: Codable, Equatable {
     let timeSeconds: Double?
 
     /// The holder's `PlayerTrack` id. Only meaningful within the run that produced it,
-    /// and a track is not yet a person: when a track breaks, so does this.
+    /// and a track is not a person: the run's `IdentityRecord` says who it was.
     let playerID: Int
 
     /// The holder's box on this frame, in Vision normalized space.

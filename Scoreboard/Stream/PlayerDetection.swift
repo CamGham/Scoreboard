@@ -120,6 +120,10 @@ struct PlayerDetectionStats: Codable, Equatable {
         /// those still running counted up to the moment the stats were taken.
         var confirmedTrackFrames = 0
 
+        /// How well tracks were put onto the people on court. Nil when no format was
+        /// picked, and for runs from before identities.
+        var identity: IdentityTracker.Summary?
+
         var meanTrackLifetimeFrames: Double {
             tracksConfirmed > 0 ? Double(confirmedTrackFrames) / Double(tracksConfirmed) : 0
         }

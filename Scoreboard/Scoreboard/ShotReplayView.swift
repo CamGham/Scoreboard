@@ -50,6 +50,9 @@ struct ShotReplayView: View {
     /// The run's possession record, for the ring under whoever has the ball.
     var possession: PossessionRecord?
 
+    /// Which track was which player, to name the holder.
+    var identities: IdentityRecord?
+
     @State private var replay: ShotReplayPlayer?
 
     /// Controls are overlaid, so they can be dismissed to get a clear look at the shot.
@@ -170,7 +173,7 @@ struct ShotReplayView: View {
                 ZStack(alignment: .topLeading) {
                     PlayerLayerView(player: replay.player)
 
-                    PossessionRingOverlay(possession: possession, time: replay.currentTime)
+                    PossessionRingOverlay(possession: possession, identities: identities, time: replay.currentTime)
                         .frame(width: content.width, height: content.height)
                         .offset(x: content.minX, y: content.minY)
 

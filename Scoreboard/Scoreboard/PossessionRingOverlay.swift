@@ -14,6 +14,10 @@ import SwiftUI
 struct PossessionRingOverlay: View {
     let possession: PossessionRecord?
 
+    /// Which track was which player, to name the holder above their head. Nil draws the
+    /// ring alone.
+    var identities: IdentityRecord?
+
     /// Playback position, in media seconds.
     let time: Double
 
@@ -21,6 +25,17 @@ struct PossessionRingOverlay: View {
         GeometryReader { geometry in
             if let holder = possession?.frame(atTime: time) {
                 let size = geometry.size
+
+                if let player = identities?.player(forTrack: holder.playerID, at: holder.frameID) {
+                    Text(player.label)
+                        .font(.caption.bold())
+                        .foregroundStyle(Color.orange)
+                        .shadow(color: .black.opacity(0.6), radius: 2)
+                        .position(
+                            x: holder.box.midX * size.width,
+                            y: (1 - holder.box.maxY) * size.height - 10
+                        )
+                }
 
                 // Under their feet: the bottom-centre of their box, flattened for the
                 // camera looking down at the floor.

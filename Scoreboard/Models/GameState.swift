@@ -89,6 +89,9 @@ final class GameState {
     /// analysis is still running.
     private(set) var possession: PossessionRecord?
 
+    /// Which track was which player, handed over with `possession` to label its holder.
+    private(set) var identities: IdentityRecord?
+
     // Convenience accessors so views don't have to reach through `snapshot`.
     var ballHistory: [BallObservation] { snapshot.ballHistory }
     var rim: HoopGeometry? { snapshot.rim }
@@ -271,11 +274,13 @@ final class GameState {
         abandonedAttempts = matched.filter { $0.result == .abandoned }
         lastMadeFrame = shotTimeline.last(where: { $0.result == .made })?.endFrame
         possession = run.possession
+        identities = run.identities
     }
 
-    /// Hand over a finished analysis's possession record.
-    func setPossession(_ record: PossessionRecord?) {
-        possession = record
+    /// Hand over a finished analysis's possession and identity records.
+    func setPlayerRecords(possession: PossessionRecord?, identities: IdentityRecord?) {
+        self.possession = possession
+        self.identities = identities
     }
 
     func reset() {
@@ -284,5 +289,6 @@ final class GameState {
         abandonedAttempts.removeAll()
         lastMadeFrame = nil
         possession = nil
+        identities = nil
     }
 }
