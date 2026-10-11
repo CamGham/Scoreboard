@@ -46,7 +46,10 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     
     func stop() async {
         await captureService.stop()
-        await MainActor.run { tracker.playerTracks.removeAll() }
+        await MainActor.run {
+            tracker.playerTracks.removeAll()
+            tracker.ballHolderID = nil
+        }
     }
     
     

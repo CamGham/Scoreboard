@@ -26,7 +26,10 @@ struct DetectionOverlayView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            PlayerTracksOverlay(tracks: processor.tracker.playerTracks)
+            PlayerTracksOverlay(
+                tracks: processor.tracker.playerTracks,
+                holderID: processor.tracker.ballHolderID
+            )
 
             let gameState = processor.tracker.gameState
 
@@ -146,26 +149,32 @@ struct DetectionOverlayView: View {
 ///
 /// A coasting player — not matched on the latest pass, carried on its prediction — is
 /// drawn faded and dashed, so a box that is only a guess doesn't look like a sighting.
+/// Whoever has the ball is drawn orange.
 struct PlayerTracksOverlay: View {
     let tracks: [PlayerTrack]
+
+    /// The track holding the ball, if any.
+    var holderID: Int?
 
     var body: some View {
         GeometryReader { geometry in
             ForEach(tracks) { track in
                 let rect = viewRect(for: track.box, in: geometry.size)
                 let isCoasting = track.state == .coasting
+                let colour = (track.id == holderID ? Color.orange : Color.green)
+                    .opacity(isCoasting ? 0.45 : 1)
 
                 Rectangle()
                     .stroke(
-                        Color.green.opacity(isCoasting ? 0.45 : 1),
-                        style: StrokeStyle(lineWidth: 2, dash: isCoasting ? [6, 4] : [])
+                        colour,
+                        style: StrokeStyle(lineWidth: track.id == holderID ? 3 : 2, dash: isCoasting ? [6, 4] : [])
                     )
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
 
                 Text("P\(track.id)")
                     .font(.caption.bold())
-                    .foregroundStyle(Color.green.opacity(isCoasting ? 0.45 : 1))
+                    .foregroundStyle(colour)
                     .position(x: rect.midX, y: rect.minY - 10)
             }
         }

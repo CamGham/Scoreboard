@@ -29,6 +29,10 @@ class VisionTracker {
     /// published while an overlay is being drawn.
     var playerTracks: [PlayerTrack] = []
 
+    /// The track holding the ball as of the latest frame, published alongside
+    /// `playerTracks`. Nil while the ball is loose or nobody has it.
+    var ballHolderID: Int?
+
     /// Main-actor game state for the UI to read.
     let gameState = GameState()
 
@@ -49,6 +53,12 @@ class VisionTracker {
         passInterval: PlayerTracker.Config().detectionInterval
     )
     @ObservationIgnored private var previousPlayerSample: PlayerSample?
+
+    /// Decides who has the ball on every frame — see `PossessionTracker`.
+    @ObservationIgnored private(set) var possessionTracker = PossessionTracker()
+
+    /// Presentation time of the frame open now, for stamping what is recorded on it.
+    @ObservationIgnored private var currentFrameTime: Double?
 
     /// Frame the rim was last sampled on.
     @ObservationIgnored private var lastRimSampleFrame: Int?
@@ -125,6 +135,7 @@ class VisionTracker {
     ///   seekable afterwards.
     func beginFrame(timeSeconds: Double? = nil) {
         frameCounter &+= 1
+        currentFrameTime = timeSeconds
 
         // Committing the previous frame's sighting is where the shot detector runs.
         PipelineSignpost.measure("Shot tracking") {
@@ -180,7 +191,20 @@ class VisionTracker {
                 nil
             }
 
-        trackPlayers(fullFrame.map { (PlayerDetection.players(in: $0.results), $0.source) })
+        let visible = trackPlayers(fullFrame.map { (PlayerDetection.players(in: $0.results), $0.source) })
+
+        // After the players, so the ball is judged against where they are on this frame.
+        let holder = updatePossession(
+            ball: found.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) },
+            players: visible
+        )
+
+        if publishesOverlay {
+            Task { @MainActor in
+                self.playerTracks = visible
+                self.ballHolderID = holder
+            }
+        }
 
         if let fullFrame {
             sampleRim(from: fullFrame.results)
@@ -205,6 +229,9 @@ class VisionTracker {
         }
     }
 
+    /// Who held the ball, frame by frame, for saving with the run.
+    var possession: PossessionRecord { possessionTracker.record }
+
     /// Detection and tracking numbers for the run so far, for saving with it.
     var playerStats: PlayerDetectionStats {
         var stats = playerDetectionStats
@@ -224,7 +251,10 @@ class VisionTracker {
     // MARK: Players
 
     /// Move the players on to this frame, folding in `detections` when it had any.
-    private func trackPlayers(_ detections: (players: [PlayerDetection], source: PlayerDetectionStats.Source)?) {
+    /// - Returns: the tracks worth showing, as of this frame.
+    private func trackPlayers(
+        _ detections: (players: [PlayerDetection], source: PlayerDetectionStats.Source)?
+    ) -> [PlayerTrack] {
         PipelineSignpost.measure("Player tracking") {
             playerTracker.update(frameID: frameCounter, detections: detections?.players)
         }
@@ -241,10 +271,22 @@ class VisionTracker {
             )
         }
 
-        guard publishesOverlay else { return }
-        Task { @MainActor in
-            self.playerTracks = visible
+        return visible
+    }
+
+    /// Decide who has the ball on this frame.
+    /// - Parameter ball: its centre, or nil when it wasn't seen.
+    /// - Returns: the holder's track id, if anyone holds it.
+    private func updatePossession(ball: CGPoint?, players: [PlayerTrack]) -> Int? {
+        PipelineSignpost.measure("Possession") {
+            possessionTracker.update(
+                frameID: frameCounter,
+                timeSeconds: currentFrameTime,
+                ball: ball,
+                players: players
+            )
         }
+        return possessionTracker.holderID
     }
 
     /// A request for the whole frame, every class.
