@@ -108,6 +108,27 @@ struct IdentityCheck: Codable, Equatable {
 
     /// Clean samples each player's track had gathered, in `playerIDs` order.
     let samples: [Int]
+
+    /// Why each player did or didn't give a clean sample on each frame with detections
+    /// since they last touched, in `playerIDs` order. Nil for checks from before it was
+    /// recorded.
+    let blocked: [Blocked]?
+
+    /// One player's frames after a touch, by the first thing that kept each from being a
+    /// clean sample — the same rules `AppearanceSeparation.cleanTracks` applies.
+    struct Blocked: Codable, Equatable {
+        /// Sampled.
+        var clean = 0
+        /// No track was this player.
+        var noTrack = 0
+        /// Their track was coasting: no detection matched it.
+        var notMatched = 0
+        /// Matched, but below the confidence a sample needs.
+        var lowConfidence = 0
+        /// Clear of the other players, but touching a box that is nobody — a duplicate
+        /// or a bystander.
+        var touchingNobody = 0
+    }
 }
 
 /// Which track was which player, over the run.
@@ -263,6 +284,10 @@ struct IdentityTracker {
         var startFrame: Int
         var startTime: Double?
         var lastTouchFrame: Int
+
+        /// Since the last touch, by player: why each frame did or didn't give a sample.
+        /// A new touch starts it again, since only the final wait matters.
+        var blocked: [Int: IdentityCheck.Blocked] = [:]
     }
     private var groups: [Group] = []
 
@@ -356,6 +381,7 @@ struct IdentityTracker {
         // it was just before.
         noteTouches(among: tracks, at: frameID)
         refreshRecentLooks()
+        countBlocks(among: tracks, at: frameID)
         checkGroups(tracks: tracks, at: frameID)
     }
 
@@ -492,6 +518,42 @@ struct IdentityTracker {
                   look.count >= appearance.config.samplesBeforeComparing
             else { continue }
             slots[index].recentLook = look
+        }
+    }
+
+    /// For every group waiting after its last touch, note why each player did or didn't
+    /// give a clean sample on this frame.
+    private mutating func countBlocks(among tracks: [PlayerTrack], at frameID: Int) {
+        // Only a frame with a detection pass can give a sample at all.
+        guard tracks.contains(where: { $0.lastSeenFrame == frameID }) else { return }
+
+        let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let rules = appearance.config
+
+        for index in groups.indices where groups[index].lastTouchFrame < frameID {
+            for player in groups[index].players {
+                var counts = groups[index].blocked[player] ?? IdentityCheck.Blocked()
+
+                if let owner = slots[player].owner, let track = byID[owner] {
+                    if track.lastSeenFrame != frameID {
+                        counts.notMatched += 1
+                    } else if track.confidence < rules.minimumConfidence {
+                        counts.lowConfidence += 1
+                    } else if tracks.contains(where: {
+                        $0.id != track.id && AppearanceSeparation.touches(track, $0, clearance: rules.clearance)
+                    }) {
+                        // Anyone else's player touching them would have joined this group
+                        // and restarted the wait, so this is a box that is nobody.
+                        counts.touchingNobody += 1
+                    } else {
+                        counts.clean += 1
+                    }
+                } else {
+                    counts.noTrack += 1
+                }
+
+                groups[index].blocked[player] = counts
+            }
         }
     }
 
@@ -690,7 +752,8 @@ struct IdentityTracker {
             otherCost: otherCost,
             samples: players.map { player in
                 slots[player].owner.flatMap { appearance.look(ofTrack: $0)?.count } ?? 0
-            }
+            },
+            blocked: players.map { group.blocked[$0] ?? IdentityCheck.Blocked() }
         ))
 
         switch outcome {

@@ -547,3 +547,74 @@ func sharedChangeDoesNotDilute() {
     #expect(tracker.record.checks.map(\.outcome) == [.swapped])
     #expect(tracker.labels(for: apart(29)) == [1: "P2", 2: "P1"])
 }
+
+// MARK: - Why a check never got clear
+
+/// Track 2 at x 0.7 on `frame`, matched at `confidence`, or coasting since frame 30.
+private func playerTwo(_ frame: Int, confidence: Float = 0.9, coasting: Bool = false) -> PlayerTrack {
+    var track = track(2, at: 0.7, first: 1, seen: coasting ? 30 : frame, state: coasting ? .coasting : .confirmed)
+    track.confidence = confidence
+    return track
+}
+
+@Test("While a check waits, each frame records why a player gave no clean sample")
+func neverClearRecordsWhy() throws {
+    var tracker = touchedOneOnOne()
+    let playerOne = { (frame: Int) in track(1, at: 0.3, first: 1, seen: frame) }
+
+    for frame in 26...30 {
+        tracker.update(frameID: frame, tracks: [playerOne(frame), playerTwo(frame, confidence: 0.5)])
+    }
+    for frame in 31...35 {
+        tracker.update(frameID: frame, tracks: [playerOne(frame), playerTwo(frame, coasting: true)])
+    }
+    // A second box with nobody on it, right beside them.
+    for frame in 36...40 {
+        tracker.update(
+            frameID: frame,
+            tracks: [playerOne(frame), playerTwo(frame), track(9, at: 0.74, first: 36, seen: frame)]
+        )
+    }
+    // Then nobody's track is player two.
+    for frame in 41...116 {
+        tracker.update(frameID: frame, tracks: [playerOne(frame)])
+    }
+
+    let check = try #require(tracker.record.checks.first)
+    #expect(check.outcome == .neverClear)
+
+    let blocked = try #require(check.blocked)
+    #expect(blocked[0] == IdentityCheck.Blocked(clean: 91))
+    #expect(blocked[1] == IdentityCheck.Blocked(noTrack: 76, notMatched: 5, lowConfidence: 5, touchingNobody: 5))
+}
+
+@Test("Touching again starts the count over")
+func touchingAgainResetsTheCount() throws {
+    var tracker = touchedOneOnOne()
+    let playerOne = { (frame: Int) in track(1, at: 0.3, first: 1, seen: frame) }
+
+    for frame in 26...30 {
+        tracker.update(frameID: frame, tracks: [playerOne(frame), playerTwo(frame, confidence: 0.5)])
+    }
+    for frame in 31...33 {
+        tracker.update(
+            frameID: frame,
+            tracks: [track(1, at: 0.48, first: 1, seen: frame), track(2, at: 0.52, first: 1, seen: frame)]
+        )
+    }
+    for frame in 34...124 {
+        tracker.update(frameID: frame, tracks: [playerOne(frame), playerTwo(frame, confidence: 0.5)])
+    }
+
+    let check = try #require(tracker.record.checks.first)
+    #expect(check.outcome == .neverClear)
+    #expect(check.blocked?[1] == IdentityCheck.Blocked(lowConfidence: 91))
+}
+
+@Test("A check saved before reasons were recorded still loads")
+func checkWithoutReasonsLoads() throws {
+    let json = #"{"startFrame":21,"frame":116,"playerIDs":[],"outcome":"neverClear","samples":[30,0]}"#
+    let check = try JSONDecoder().decode(IdentityCheck.self, from: Data(json.utf8))
+    #expect(check.samples == [30, 0])
+    #expect(check.blocked == nil)
+}

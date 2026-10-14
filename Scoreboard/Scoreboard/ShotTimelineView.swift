@@ -248,6 +248,11 @@ struct ShotTimelineView: View {
                     Text(Self.verdict(check))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if check.outcome == .neverClear, let why = Self.blockedSummary(check, record: record) {
+                        Text(why)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         } header: {
@@ -284,6 +289,29 @@ struct ShotTimelineView: View {
             return "Never clear · samples " + check.samples.map(String.init).joined(separator: " / ")
         case .noEarlierLook: return "No earlier look to compare with"
         }
+    }
+
+    /// Each player's frames since the last touch, by what kept them from being sampled:
+    /// "P1 clean 30 · P2 low confidence 41, not matched 9".
+    private static func blockedSummary(_ check: IdentityCheck, record: IdentityRecord) -> String? {
+        guard let blocked = check.blocked else { return nil }
+
+        return zip(check.playerIDs, blocked).map { id, counts in
+            let name = record.players.first { $0.id == id }?.label ?? "?"
+            let reasons = [
+                ("clean", counts.clean),
+                ("no track", counts.noTrack),
+                ("not matched", counts.notMatched),
+                ("low confidence", counts.lowConfidence),
+                ("touching a box with no player", counts.touchingNobody),
+            ]
+            .filter { $0.1 > 0 }
+            .sorted { $0.1 > $1.1 }
+            .map { "\($0.0) \($0.1)" }
+
+            return name + " " + (reasons.isEmpty ? "no frames" : reasons.joined(separator: ", "))
+        }
+        .joined(separator: " · ")
     }
 
     private static func tally(_ checks: [IdentityCheck]) -> String {
