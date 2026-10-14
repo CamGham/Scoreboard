@@ -173,8 +173,9 @@ extension IdentityRecord {
 /// until it is settled, through any breaks and relinks. Once they are apart, each one's
 /// track gathers a few clean samples, and those are compared with how each player looked
 /// just before the touch. If the other way round fits clearly better, they are swapped
-/// from the frame they first touched; if neither fits clearly better, the labels stay and
-/// the stretch is marked uncertain.
+/// from the frame they first touched. If neither fits clearly better, the check waits for
+/// more samples and asks again; still unclear at the limit, the labels stay and the
+/// stretch is marked uncertain.
 ///
 /// Time is counted in frames, like the player tracker.
 struct IdentityTracker {
@@ -194,6 +195,11 @@ struct IdentityTracker {
 
         /// How much closer one way round has to fit than the other to be acted on.
         var clearMargin = 0.25
+
+        /// Clean samples to wait for, at most, when neither way round fits clearly better
+        /// yet. About 1.5 s — inside the timeout, so a check that is gathering samples
+        /// gets to finish.
+        var maxSamplesToCheck = 15
 
         /// Frames after a touch to wait for those samples before giving up and marking
         /// the stretch uncertain. Three seconds at 30 fps.
@@ -509,7 +515,9 @@ struct IdentityTracker {
             }
 
             if ready {
-                check(group, tracks: byID, at: frameID)
+                if !check(group, tracks: byID, at: frameID) {
+                    waiting.append(group)
+                }
             } else if frameID - group.lastTouchFrame > config.checkTimeoutFrames {
                 log(group, at: frameID, outcome: .neverClear)
             } else {
@@ -522,7 +530,11 @@ struct IdentityTracker {
 
     /// Compare how each player's track looks now with how each player looked before the
     /// touch, and swap them if the other way round fits clearly better.
-    private mutating func check(_ group: Group, tracks byID: [Int: PlayerTrack], at frameID: Int) {
+    ///
+    /// - Returns: whether the group is settled. A close call with samples still to come
+    ///   isn't: it is asked again with each new one, and only logged once it is clear or
+    ///   has reached `maxSamplesToCheck`.
+    private mutating func check(_ group: Group, tracks byID: [Int: PlayerTrack], at frameID: Int) -> Bool {
         struct Entry {
             let player: Int
             let track: PlayerTrack
@@ -542,7 +554,7 @@ struct IdentityTracker {
         // Someone with no look from before can't be checked.
         guard entries.count == group.players.count, entries.count >= 2 else {
             log(group, at: frameID, outcome: .noEarlierLook)
-            return
+            return true
         }
 
         // costs[i][j]: how far entry i's track now is from how entry j's player looked.
@@ -552,35 +564,46 @@ struct IdentityTracker {
             for other in entries {
                 guard let distance = appearance.distance(entry.now, other.before) else {
                     log(group, at: frameID, outcome: .tooClose)
-                    return
+                    return true
                 }
                 row.append(distance)
             }
             costs.append(row)
         }
 
-        checks += 1
         let current = entries.indices.reduce(0) { $0 + costs[$1][$1] }
+
+        // The look now is an average that steadies with every sample, so a close call is
+        // worth asking again — up to a point, since each extra look is another chance for
+        // noise to tip it. The timeout still applies: a player who stops being clear
+        // mustn't leave the check waiting for samples that never come.
+        let canWait = (entries.map(\.now.count).min() ?? 0) < config.maxSamplesToCheck
+            && frameID - group.lastTouchFrame <= config.checkTimeoutFrames
 
         if entries.count == 2 {
             let swapped = costs[0][1] + costs[1][0]
             if swapped < current * (1 - config.clearMargin) {
                 reassign([(entries[0].track, entries[1].player), (entries[1].track, entries[0].player)], from: group.startFrame)
                 swaps += 1
+                checks += 1
                 log(group, at: frameID, outcome: .swapped, keepCost: current, otherCost: swapped)
             } else if current < swapped * (1 - config.clearMargin) {
+                checks += 1
                 log(group, at: frameID, outcome: .kept, keepCost: current, otherCost: swapped)
+            } else if canWait {
+                return false
             } else {
+                checks += 1
                 log(group, at: frameID, outcome: .tooClose, keepCost: current, otherCost: swapped)
             }
-            return
+            return true
         }
 
         guard let assignment = try? HungarianAlgorithm.findOptimalAssignment(
             Matrix(costs.map { Vector($0) })
         ) else {
             log(group, at: frameID, outcome: .tooClose, keepCost: current)
-            return
+            return true
         }
 
         let best = zip(assignment.rowIndices, assignment.columnIndices).reduce(0) { $0 + costs[$1.0][$1.1] }
@@ -588,18 +611,21 @@ struct IdentityTracker {
             .filter { $0.0 != $0.1 }
             .map { (track: entries[$0.0].track, player: entries[$0.1].player) }
 
-        guard !changes.isEmpty else {
+        if changes.isEmpty {
+            checks += 1
             log(group, at: frameID, outcome: .kept, keepCost: current, otherCost: best)
-            return
-        }
-
-        if best < current * (1 - config.clearMargin) {
+        } else if best < current * (1 - config.clearMargin) {
             reassign(changes, from: group.startFrame)
             swaps += 1
+            checks += 1
             log(group, at: frameID, outcome: .swapped, keepCost: current, otherCost: best)
+        } else if canWait {
+            return false
         } else {
+            checks += 1
             log(group, at: frameID, outcome: .tooClose, keepCost: current, otherCost: best)
         }
+        return true
     }
 
     /// Give each track a different player from `frame` on. A track that started earlier

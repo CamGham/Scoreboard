@@ -352,8 +352,9 @@ func wrongRelinksAreCorrected() {
     #expect(tracker.summary.swaps == 1)
 }
 
-@Test("When two players look alike, the labels stay and the stretch is marked uncertain")
+@Test("When nothing has told the players apart, the labels stay and the stretch is marked uncertain")
 func lookalikesAreMarkedUncertain() {
+    // Identical in every band, so every cue scores a coin flip and counts for nothing.
     var tracker = touchedOneOnOne(first: personB, second: personB)
 
     let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
@@ -361,8 +362,8 @@ func lookalikesAreMarkedUncertain() {
         tracker.update(frameID: frame, tracks: apart(frame), samples: [1: personB, 2: personB])
     }
 
+    // Settled at once: more samples of the same can't help.
     #expect(tracker.labels(for: apart(29)) == [1: "P1", 2: "P2"])
-    #expect(tracker.summary.checks == 1)
     #expect(tracker.summary.swaps == 0)
     #expect(tracker.summary.uncertain == 1)
     #expect(tracker.record.uncertain.first?.startFrame == 21)
@@ -370,8 +371,82 @@ func lookalikesAreMarkedUncertain() {
 
     let check = tracker.record.checks.first
     #expect(check?.outcome == .tooClose)
+    #expect(check?.keepCost == nil)
+}
+
+/// Both players reading the same after a touch: half hidden, blurred.
+private let blurred = appearance(shorts: (120, 128, 128), feet: (120, 128, 128))
+
+@Test("A close call that never clears is marked uncertain at the sample limit")
+func closeCallStopsAtLimit() {
+    var tracker = touchedOneOnOne()
+
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+    for frame in 26...39 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: blurred, 2: blurred])
+    }
+
+    // Still asking at 14 samples.
+    #expect(tracker.record.checks.isEmpty)
+
+    tracker.update(frameID: 40, tracks: apart(40), samples: [1: blurred, 2: blurred])
+
+    #expect(tracker.labels(for: apart(40)) == [1: "P1", 2: "P2"])
+    #expect(tracker.summary.checks == 1)
+    #expect(tracker.summary.uncertain == 1)
+
+    let check = tracker.record.checks.first
+    #expect(check?.outcome == .tooClose)
+    #expect(check?.samples == [15, 15])
     #expect(check?.keepCost != nil)
     #expect(check?.keepCost == check?.otherCost)
+}
+
+@Test("A close call waits for more samples and decides once they make it clear")
+func closeCallWaitsForEvidence() {
+    var tracker = touchedOneOnOne()
+
+    // Coming out of the touch, both read the same, then clearly — the wrong way round.
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+
+    for frame in 26...31 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: blurred, 2: blurred])
+    }
+    #expect(tracker.record.checks.isEmpty)
+    #expect(tracker.labels(for: apart(31)) == [1: "P1", 2: "P2"])
+
+    for frame in 32...40 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: personB, 2: personA])
+    }
+
+    let check = tracker.record.checks.first
+    #expect(tracker.record.checks.count == 1)
+    #expect(check?.outcome == .swapped)
+    #expect((check?.samples.min() ?? 0) > 6)
+    #expect(tracker.labels(for: apart(40)) == [1: "P2", 2: "P1"])
+    #expect(tracker.record.player(forTrack: 1, at: 21)?.number == 2)
+}
+
+@Test("A close call stops waiting when the timeout comes")
+func closeCallTimesOut() {
+    var tracker = touchedOneOnOne()
+
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+
+    // Five unclear samples, then they stay apart but are never clean again.
+    for frame in 26...30 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: blurred, 2: blurred])
+    }
+    for frame in 31...115 {
+        tracker.update(frameID: frame, tracks: apart(frame))
+    }
+    #expect(tracker.record.checks.isEmpty)
+
+    for frame in 116...120 {
+        tracker.update(frameID: frame, tracks: apart(frame))
+    }
+    #expect(tracker.record.checks.map(\.outcome) == [.tooClose])
+    #expect(tracker.record.checks.first?.samples == [5, 5])
 }
 
 @Test("Players who never get a clear look in time are marked uncertain")
