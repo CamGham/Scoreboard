@@ -260,3 +260,60 @@ func appearanceSummaryRoundTrip() throws {
     )
     #expect(decoded == meter.summary)
 }
+
+// MARK: - Weighting
+
+/// Two players who differ only in their shoes, apart for frames 1–20.
+private func meterTrainedOnShoes(frames: ClosedRange<Int> = 1...20) -> AppearanceSeparation {
+    var meter = AppearanceSeparation()
+    for frame in frames {
+        meter.update(
+            frameID: frame,
+            tracks: [player(1, at: 0.3, seen: frame), player(2, at: 0.7, seen: frame)],
+            samples: [1: look(feet: blue), 2: look(feet: white)]
+        )
+    }
+    return meter
+}
+
+private func average(of sample: AppearanceSample) -> AppearanceSeparation.Look {
+    var look = AppearanceSeparation.Look()
+    look.add(sample, heightRatio: nil)
+    return look
+}
+
+@Test("A cue's weight is its log-odds of picking the right player")
+func weightIsLogOdds() {
+    func weight(_ accuracy: Double) -> Double {
+        AppearanceSeparation.weight(for: AppearanceSeparation.Score(correct: accuracy * 100, compared: 100))
+    }
+
+    #expect(weight(0.5) == 0)
+    #expect(weight(0.4) == 0)
+    #expect(abs(weight(0.99) - log(99)) < 1e-9)
+    #expect(abs(weight(1) - log(0.995 / 0.005)) < 1e-9)
+}
+
+@Test("A cue that never told the players apart adds nothing when looks are compared")
+func coinFlipCueCountsForNothing() throws {
+    let meter = meterTrainedOnShoes()
+
+    // Shirts never differed between the players, so they scored 50%.
+    let blackShirt = average(of: look(torso: black, feet: blue))
+    let whiteShirt = average(of: look(torso: white, feet: blue))
+    let whiteShoes = average(of: look(torso: black, feet: white))
+
+    #expect(meter.summary.score(for: .torso).accuracy == 0.5)
+    #expect(try #require(meter.distance(blackShirt, whiteShirt)) == 0)
+    #expect(try #require(meter.distance(blackShirt, whiteShoes)) > 0)
+}
+
+@Test("Until a cue has been compared enough, every cue counts the same")
+func unweightedUntilJudged() throws {
+    let meter = meterTrainedOnShoes(frames: 1...4)
+
+    let blackShirt = average(of: look(torso: black, feet: blue))
+    let whiteShirt = average(of: look(torso: white, feet: blue))
+
+    #expect(try #require(meter.distance(blackShirt, whiteShirt)) > 0)
+}

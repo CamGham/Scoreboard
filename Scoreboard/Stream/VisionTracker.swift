@@ -65,10 +65,6 @@ class VisionTracker {
     /// a format is picked, which leaves tracks as they were.
     @ObservationIgnored private(set) var identityTracker: IdentityTracker?
 
-    /// Measures how well appearance tells the players apart — see `AppearanceSeparation`.
-    /// On whenever identities are.
-    @ObservationIgnored private var appearance: AppearanceSeparation?
-
     /// Presentation time of the frame open now, for stamping what is recorded on it.
     @ObservationIgnored private var currentFrameTime: Double?
 
@@ -212,8 +208,8 @@ class VisionTracker {
 
         let visible = trackPlayers(fullFrame.map { (PlayerDetection.players(in: $0.results), $0.source) })
 
-        if appearance != nil {
-            measureAppearance(of: visible, pixelBuffer: pixelBuffer, orientation: orientation)
+        if identityTracker != nil {
+            updateIdentities(of: visible, pixelBuffer: pixelBuffer, orientation: orientation)
         }
 
         // After the players, so the ball is judged against where they are on this frame.
@@ -265,7 +261,6 @@ class VisionTracker {
     /// the first frame: a player numbered partway through would be numbered wrongly.
     func setFormat(_ format: GameFormat?) {
         identityTracker = format.map { IdentityTracker(format: $0) }
-        appearance = format.map { _ in AppearanceSeparation() }
     }
 
     /// Detection and tracking numbers for the run so far, for saving with it.
@@ -281,7 +276,7 @@ class VisionTracker {
             confirmedTrackFrames: playerTracker.endedTrackFrames
                 + live.reduce(0) { $0 + $1.lastSeenFrame - $1.firstFrame },
             identity: identityTracker?.summary,
-            appearance: appearance?.summary
+            appearance: identityTracker?.appearance.summary
         )
         return stats
     }
@@ -299,12 +294,6 @@ class VisionTracker {
 
         let visible = playerTracker.visibleTracks
 
-        if identityTracker != nil {
-            PipelineSignpost.measure("Identity") {
-                identityTracker?.update(frameID: frameCounter, tracks: visible)
-            }
-        }
-
         if let detections {
             previousPlayerSample = playerDetectionStats.record(
                 frameID: frameCounter,
@@ -318,24 +307,33 @@ class VisionTracker {
         return visible
     }
 
-    /// Read how the clear players look on this frame, for `AppearanceSeparation`.
+    /// Say which player each track is, reading how the clear players look on this frame
+    /// for the identity checks.
     ///
     /// Only players matched on this frame are read, so frames without detections read no
-    /// pixels — they only let overlaps end tracklets.
-    private func measureAppearance(
+    /// pixels — they only move identities on.
+    private func updateIdentities(
         of players: [PlayerTrack],
         pixelBuffer: CVImageBuffer,
         orientation: CGImagePropertyOrientation
     ) {
-        PipelineSignpost.measure("Appearance") {
+        let samples = PipelineSignpost.measure("Appearance") {
             let clean = AppearanceSeparation.cleanTracks(players, at: frameCounter)
             let read = AppearanceSampler.samples(
                 of: clean.map(\.box),
                 in: pixelBuffer,
                 orientation: orientation
             ) ?? []
-            let samples = Dictionary(zip(clean.map(\.id), read), uniquingKeysWith: { first, _ in first })
-            appearance?.update(frameID: frameCounter, tracks: players, samples: samples)
+            return Dictionary(zip(clean.map(\.id), read), uniquingKeysWith: { first, _ in first })
+        }
+
+        PipelineSignpost.measure("Identity") {
+            identityTracker?.update(
+                frameID: frameCounter,
+                timeSeconds: currentFrameTime,
+                tracks: players,
+                samples: samples
+            )
         }
     }
 

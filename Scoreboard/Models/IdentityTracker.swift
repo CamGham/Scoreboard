@@ -60,12 +60,54 @@ struct IdentitySegment: Codable, Equatable {
     let trackID: Int
     let playerID: UUID
 
-    /// The track's first frame. A track that claims a player late is still that player
-    /// from the start: it was following them all along.
+    /// Where the stretch begins: the track's first frame — a track that claims a player
+    /// late was following them all along — or, after a check swapped players, the frame
+    /// they first touched.
     let startFrame: Int
 
     /// The track's last matched frame so far. Coasting frames after it are guesses.
     var endFrame: Int
+}
+
+/// A stretch where players touched and appearance couldn't settle who came out as whom.
+/// The labels are a best guess there.
+struct UncertainStretch: Codable, Equatable {
+    let startFrame: Int
+    let endFrame: Int
+    let playerIDs: [UUID]
+}
+
+/// One time players touched and were checked — or couldn't be — afterwards.
+struct IdentityCheck: Codable, Equatable {
+    enum Outcome: String, Codable {
+        /// Appearance said the labels were right.
+        case kept
+        /// Appearance said they came out the other way round, so they were swapped.
+        case swapped
+        /// Neither way round fitted clearly better. Labels left as a guess.
+        case tooClose
+        /// Not enough clean samples before the timeout. Labels left as a guess.
+        case neverClear
+        /// Someone touched before there was a clean look at them to compare with.
+        case noEarlierLook
+    }
+
+    /// When the players first touched, and when it was settled.
+    let startFrame: Int
+    let frame: Int
+    let startTime: Double?
+    let time: Double?
+
+    let playerIDs: [UUID]
+    let outcome: Outcome
+
+    /// Total distance between looks with the labels as they were, and with the best other
+    /// way round. Nil when it never got as far as comparing.
+    let keepCost: Double?
+    let otherCost: Double?
+
+    /// Clean samples each player's track had gathered, in `playerIDs` order.
+    let samples: [Int]
 }
 
 /// Which track was which player, over the run.
@@ -78,6 +120,12 @@ struct IdentityRecord: Codable, Equatable {
     var players: [PlayerIdentity]
     var segments: [IdentitySegment] = []
 
+    /// Where the labels are a guess, for the user to check.
+    var uncertain: [UncertainStretch] = []
+
+    /// Every check after players touched, whatever came of it.
+    var checks: [IdentityCheck] = []
+
     /// The player `trackID` was on `frameID`: the latest of its segments starting on or
     /// before then. Frames past a segment's end still count — the track was coasting, and
     /// was nobody else.
@@ -88,6 +136,18 @@ struct IdentityRecord: Codable, Equatable {
         else { return nil }
 
         return players.first { $0.id == segment.playerID }
+    }
+}
+
+extension IdentityRecord {
+    // Runs saved before uncertain stretches were recorded have none.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        format = try container.decode(GameFormat.self, forKey: .format)
+        players = try container.decode([PlayerIdentity].self, forKey: .players)
+        segments = try container.decodeIfPresent([IdentitySegment].self, forKey: .segments) ?? []
+        uncertain = try container.decodeIfPresent([UncertainStretch].self, forKey: .uncertain) ?? []
+        checks = try container.decodeIfPresent([IdentityCheck].self, forKey: .checks) ?? []
     }
 }
 
@@ -108,6 +168,14 @@ struct IdentityRecord: Codable, Equatable {
 /// - With every player held, a new track gets nobody — a duplicate box or a bystander —
 ///   and waits, in case one comes free.
 ///
+/// Position can't say who is who when players touch: they come out of it at the same
+/// spot, and the tracker may swap them or lose both. So players who touch are **grouped**
+/// until it is settled, through any breaks and relinks. Once they are apart, each one's
+/// track gathers a few clean samples, and those are compared with how each player looked
+/// just before the touch. If the other way round fits clearly better, they are swapped
+/// from the frame they first touched; if neither fits clearly better, the labels stay and
+/// the stretch is marked uncertain.
+///
 /// Time is counted in frames, like the player tracker.
 struct IdentityTracker {
 
@@ -119,6 +187,17 @@ struct IdentityTracker {
         /// How much further each frame gone adds. About 0.6 of the frame's width a second
         /// at 30 fps — more than a sprint across a half-court view.
         var maxSpeedPerFrame: CGFloat = 0.02
+
+        /// Clean samples each player's track needs after a touch before it is checked.
+        /// About 0.4 s with a detection pass every third frame.
+        var samplesToCheck = 4
+
+        /// How much closer one way round has to fit than the other to be acted on.
+        var clearMargin = 0.25
+
+        /// Frames after a touch to wait for those samples before giving up and marking
+        /// the stretch uncertain. Three seconds at 30 fps.
+        var checkTimeoutFrames = 90
     }
 
     /// Numbers for the run, to judge whether identities held.
@@ -135,11 +214,21 @@ struct IdentityTracker {
 
         /// Confirmed tracks that never got a player.
         var unassignedTracks = 0
+
+        /// Touches settled by appearance, and how many of those swapped players.
+        var checks = 0
+        var swaps = 0
+
+        /// Touches left as a guess: too close to call, or no clean samples in time.
+        var uncertain = 0
     }
 
     let config: Config
 
     private(set) var record: IdentityRecord
+
+    /// Samples, tracklets, and how much each cue varies — see `AppearanceSeparation`.
+    private(set) var appearance = AppearanceSeparation()
 
     /// What is known about each player, in the same order as `record.players`.
     private struct Slot {
@@ -149,6 +238,10 @@ struct IdentityTracker {
         /// Where they were last matched, and when. Nil until first claimed.
         var lastBox: CGRect?
         var lastSeenFrame: Int?
+
+        /// How they looked over their last clean stretch while nobody was in doubt about
+        /// them — what a check compares against.
+        var recentLook: AppearanceSeparation.Look?
     }
     private var slots: [Slot]
 
@@ -158,8 +251,23 @@ struct IdentityTracker {
     /// Live tracks with no player.
     private var unassigned: Set<Int> = []
 
+    /// Players who touched and haven't been checked yet.
+    private struct Group {
+        var players: Set<Int>
+        var startFrame: Int
+        var startTime: Double?
+        var lastTouchFrame: Int
+    }
+    private var groups: [Group] = []
+
     private var relinks = 0
     private var endedUnassigned = 0
+    private var checks = 0
+    private var swaps = 0
+    private var uncertain = 0
+
+    /// Media time of the frame being processed, to stamp checks with.
+    private var currentTime: Double?
 
     /// Cost given to a pairing that fails the distance check — see `PlayerTracker`.
     private static let gatedCost = 1e6
@@ -178,7 +286,10 @@ struct IdentityTracker {
             playerCount: slots.count,
             playersSeen: slots.filter { $0.lastSeenFrame != nil }.count,
             relinks: relinks,
-            unassignedTracks: endedUnassigned + unassigned.count
+            unassignedTracks: endedUnassigned + unassigned.count,
+            checks: checks,
+            swaps: swaps,
+            uncertain: uncertain
         )
     }
 
@@ -195,9 +306,18 @@ struct IdentityTracker {
 
     /// Move on to `frameID`.
     ///
-    /// - Parameter tracks: the tracks worth showing — confirmed and coasting. One that was
-    ///   here before and isn't now has ended.
-    mutating func update(frameID: Int, tracks: [PlayerTrack]) {
+    /// - Parameters:
+    ///   - timeSeconds: the frame's presentation time, so checks can be found in the video.
+    ///   - tracks: the tracks worth showing — confirmed and coasting. One that was here
+    ///     before and isn't now has ended.
+    ///   - samples: clean appearance samples taken on this frame, by track id.
+    mutating func update(
+        frameID: Int,
+        timeSeconds: Double? = nil,
+        tracks: [PlayerTrack],
+        samples: [Int: AppearanceSample] = [:]
+    ) {
+        currentTime = timeSeconds
         let live = Set(tracks.map(\.id))
 
         // Ended tracks free their players.
@@ -223,6 +343,14 @@ struct IdentityTracker {
         }
 
         assignFreePlayers(to: tracks.filter { unassigned.contains($0.id) }, at: frameID)
+
+        appearance.update(frameID: frameID, tracks: tracks, samples: samples)
+
+        // Grouped before looks are refreshed, so a touch freezes each player's look as
+        // it was just before.
+        noteTouches(among: tracks, at: frameID)
+        refreshRecentLooks()
+        checkGroups(tracks: tracks, at: frameID)
     }
 
     // MARK: Assigning
@@ -303,5 +431,266 @@ struct IdentityTracker {
         ))
         assignments[track.id] = (player: index, segment: record.segments.count - 1)
         unassigned.remove(track.id)
+    }
+
+    // MARK: Touching
+
+    /// Group the players of every set of tracks touching each other on this frame,
+    /// merging with any group they are already in.
+    private mutating func noteTouches(among tracks: [PlayerTrack], at frameID: Int) {
+        let clearance = appearance.config.clearance
+        var visited = Set<Int>()
+
+        for start in tracks where !visited.contains(start.id) {
+            var cluster: [PlayerTrack] = []
+            var queue = [start]
+            visited.insert(start.id)
+
+            while let next = queue.popLast() {
+                cluster.append(next)
+                for other in tracks where !visited.contains(other.id)
+                    && AppearanceSeparation.touches(next, other, clearance: clearance) {
+                    visited.insert(other.id)
+                    queue.append(other)
+                }
+            }
+
+            let players = Set(cluster.compactMap { assignments[$0.id]?.player })
+            guard players.count >= 2 else { continue }
+            join(players, at: frameID)
+        }
+    }
+
+    private mutating func join(_ players: Set<Int>, at frameID: Int) {
+        var merged = Group(players: players, startFrame: frameID, startTime: currentTime, lastTouchFrame: frameID)
+        groups.removeAll { group in
+            guard !group.players.isDisjoint(with: players) else { return false }
+            merged.players.formUnion(group.players)
+            if group.startFrame < merged.startFrame {
+                merged.startFrame = group.startFrame
+                merged.startTime = group.startTime
+            }
+            return true
+        }
+        groups.append(merged)
+    }
+
+    /// Take each ungrouped player's look from their track's current tracklet, once it has
+    /// enough samples. Grouped players keep the look from before they touched.
+    private mutating func refreshRecentLooks() {
+        let grouped = groups.reduce(into: Set<Int>()) { $0.formUnion($1.players) }
+
+        for index in slots.indices where !grouped.contains(index) {
+            guard let owner = slots[index].owner,
+                  let look = appearance.look(ofTrack: owner),
+                  look.count >= appearance.config.samplesBeforeComparing
+            else { continue }
+            slots[index].recentLook = look
+        }
+    }
+
+    // MARK: Checking
+
+    /// Settle every group whose players are apart and have enough clean samples, and give
+    /// up on any that have waited too long.
+    private mutating func checkGroups(tracks: [PlayerTrack], at frameID: Int) {
+        let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var waiting: [Group] = []
+
+        for group in groups {
+            guard group.lastTouchFrame < frameID else {
+                waiting.append(group)
+                continue
+            }
+
+            let ready = group.players.allSatisfy { player in
+                guard let owner = slots[player].owner else { return false }
+                return (appearance.look(ofTrack: owner)?.count ?? 0) >= config.samplesToCheck
+            }
+
+            if ready {
+                check(group, tracks: byID, at: frameID)
+            } else if frameID - group.lastTouchFrame > config.checkTimeoutFrames {
+                log(group, at: frameID, outcome: .neverClear)
+            } else {
+                waiting.append(group)
+            }
+        }
+
+        groups = waiting
+    }
+
+    /// Compare how each player's track looks now with how each player looked before the
+    /// touch, and swap them if the other way round fits clearly better.
+    private mutating func check(_ group: Group, tracks byID: [Int: PlayerTrack], at frameID: Int) {
+        struct Entry {
+            let player: Int
+            let track: PlayerTrack
+            let now: AppearanceSeparation.Look
+            let before: AppearanceSeparation.Look
+        }
+
+        let entries: [Entry] = group.players.sorted().compactMap { player in
+            guard let owner = slots[player].owner,
+                  let track = byID[owner],
+                  let now = appearance.look(ofTrack: owner),
+                  let before = slots[player].recentLook
+            else { return nil }
+            return Entry(player: player, track: track, now: now, before: before)
+        }
+
+        // Someone with no look from before can't be checked.
+        guard entries.count == group.players.count, entries.count >= 2 else {
+            log(group, at: frameID, outcome: .noEarlierLook)
+            return
+        }
+
+        // costs[i][j]: how far entry i's track now is from how entry j's player looked.
+        var costs: [[Double]] = []
+        for entry in entries {
+            var row: [Double] = []
+            for other in entries {
+                guard let distance = appearance.distance(entry.now, other.before) else {
+                    log(group, at: frameID, outcome: .tooClose)
+                    return
+                }
+                row.append(distance)
+            }
+            costs.append(row)
+        }
+
+        checks += 1
+        let current = entries.indices.reduce(0) { $0 + costs[$1][$1] }
+
+        if entries.count == 2 {
+            let swapped = costs[0][1] + costs[1][0]
+            if swapped < current * (1 - config.clearMargin) {
+                reassign([(entries[0].track, entries[1].player), (entries[1].track, entries[0].player)], from: group.startFrame)
+                swaps += 1
+                log(group, at: frameID, outcome: .swapped, keepCost: current, otherCost: swapped)
+            } else if current < swapped * (1 - config.clearMargin) {
+                log(group, at: frameID, outcome: .kept, keepCost: current, otherCost: swapped)
+            } else {
+                log(group, at: frameID, outcome: .tooClose, keepCost: current, otherCost: swapped)
+            }
+            return
+        }
+
+        guard let assignment = try? HungarianAlgorithm.findOptimalAssignment(
+            Matrix(costs.map { Vector($0) })
+        ) else {
+            log(group, at: frameID, outcome: .tooClose, keepCost: current)
+            return
+        }
+
+        let best = zip(assignment.rowIndices, assignment.columnIndices).reduce(0) { $0 + costs[$1.0][$1.1] }
+        let changes = zip(assignment.rowIndices, assignment.columnIndices)
+            .filter { $0.0 != $0.1 }
+            .map { (track: entries[$0.0].track, player: entries[$0.1].player) }
+
+        guard !changes.isEmpty else {
+            log(group, at: frameID, outcome: .kept, keepCost: current, otherCost: best)
+            return
+        }
+
+        if best < current * (1 - config.clearMargin) {
+            reassign(changes, from: group.startFrame)
+            swaps += 1
+            log(group, at: frameID, outcome: .swapped, keepCost: current, otherCost: best)
+        } else {
+            log(group, at: frameID, outcome: .tooClose, keepCost: current, otherCost: best)
+        }
+    }
+
+    /// Give each track a different player from `frame` on. A track that started earlier
+    /// keeps its old player up to then.
+    private mutating func reassign(_ changes: [(track: PlayerTrack, player: Int)], from frame: Int) {
+        for (track, player) in changes {
+            guard let current = assignments[track.id] else { continue }
+            let segment = record.segments[current.segment]
+            let playerID = record.players[player].id
+            let index: Int
+
+            if segment.startFrame >= frame {
+                record.segments[current.segment] = IdentitySegment(
+                    trackID: track.id,
+                    playerID: playerID,
+                    startFrame: segment.startFrame,
+                    endFrame: segment.endFrame
+                )
+                index = current.segment
+            } else {
+                record.segments[current.segment].endFrame = min(segment.endFrame, frame - 1)
+                record.segments.append(IdentitySegment(
+                    trackID: track.id,
+                    playerID: playerID,
+                    startFrame: frame,
+                    endFrame: max(segment.endFrame, frame)
+                ))
+                index = record.segments.count - 1
+            }
+
+            assignments[track.id] = (player: player, segment: index)
+        }
+
+        // After every segment has moved, since players are trading tracks.
+        for (track, player) in changes {
+            slots[player].owner = track.id
+            slots[player].lastBox = track.box
+            slots[player].lastSeenFrame = track.lastSeenFrame
+        }
+    }
+
+    /// Record how a check came out. Anything short of a clear answer also marks the
+    /// stretch uncertain.
+    private mutating func log(
+        _ group: Group,
+        at frameID: Int,
+        outcome: IdentityCheck.Outcome,
+        keepCost: Double? = nil,
+        otherCost: Double? = nil
+    ) {
+        let players = group.players.sorted()
+        let playerIDs = players.map { record.players[$0].id }
+
+        record.checks.append(IdentityCheck(
+            startFrame: group.startFrame,
+            frame: frameID,
+            startTime: group.startTime,
+            time: currentTime,
+            playerIDs: playerIDs,
+            outcome: outcome,
+            keepCost: keepCost,
+            otherCost: otherCost,
+            samples: players.map { player in
+                slots[player].owner.flatMap { appearance.look(ofTrack: $0)?.count } ?? 0
+            }
+        ))
+
+        switch outcome {
+        case .kept, .swapped:
+            break
+        case .tooClose, .neverClear, .noEarlierLook:
+            uncertain += 1
+            record.uncertain.append(UncertainStretch(
+                startFrame: group.startFrame,
+                endFrame: frameID,
+                playerIDs: playerIDs
+            ))
+        }
+    }
+}
+
+extension IdentityTracker.Summary {
+    // Runs saved before checks were made have none of their numbers.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        playerCount = try container.decode(Int.self, forKey: .playerCount)
+        playersSeen = try container.decodeIfPresent(Int.self, forKey: .playersSeen) ?? 0
+        relinks = try container.decodeIfPresent(Int.self, forKey: .relinks) ?? 0
+        unassignedTracks = try container.decodeIfPresent(Int.self, forKey: .unassignedTracks) ?? 0
+        checks = try container.decodeIfPresent(Int.self, forKey: .checks) ?? 0
+        swaps = try container.decodeIfPresent(Int.self, forKey: .swaps) ?? 0
+        uncertain = try container.decodeIfPresent(Int.self, forKey: .uncertain) ?? 0
     }
 }

@@ -228,3 +228,247 @@ func trackingSummaryWithoutIdentityLoads() throws {
     #expect(decoded.tracksConfirmed == 23)
     #expect(decoded.identity == nil)
 }
+
+// MARK: - Checks after touching
+
+private typealias Colour = (luma: UInt8, cb: UInt8, cr: UInt8)
+
+private func appearance(shorts: Colour, feet: Colour) -> AppearanceSample {
+    func solid(_ colour: Colour) -> [Float] {
+        var histogram = [Float](repeating: 0, count: AppearanceSampler.binCount)
+        histogram[AppearanceSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
+        return histogram
+    }
+    let black: Colour = (30, 128, 128)
+    return AppearanceSample(
+        bands: [solid(black), solid(black), solid(shorts), solid(black), solid(feet)],
+        height: 0.25,
+        footY: 0.375,
+        aspect: 0.32
+    )
+}
+
+/// Navy shorts and blue shoes.
+private let personA = appearance(shorts: (45, 150, 120), feet: (80, 200, 100))
+/// Black shorts and white shoes.
+private let personB = appearance(shorts: (30, 128, 128), feet: (235, 128, 128))
+
+/// Media time of a frame at 30 fps.
+private func time(_ frame: Int) -> Double { Double(frame) / 30 }
+
+/// A 1v1 where track 1 (looking like `first`) and track 2 (like `second`) are apart for
+/// frames 1–20, then touch for frames 21–25.
+private func touchedOneOnOne(first: AppearanceSample = personA, second: AppearanceSample = personB) -> IdentityTracker {
+    var tracker = IdentityTracker(format: .oneOnOne)
+    for frame in 1...20 {
+        tracker.update(
+            frameID: frame,
+            timeSeconds: time(frame),
+            tracks: [track(1, at: 0.3, first: 1, seen: frame), track(2, at: 0.7, first: 1, seen: frame)],
+            samples: [1: first, 2: second]
+        )
+    }
+    for frame in 21...25 {
+        tracker.update(
+            frameID: frame,
+            timeSeconds: time(frame),
+            tracks: [track(1, at: 0.48, first: 1, seen: frame), track(2, at: 0.52, first: 1, seen: frame)]
+        )
+    }
+    return tracker
+}
+
+@Test("Players the tracker swapped while touching are swapped back from when they touched")
+func swappedTracksAreCorrected() {
+    var tracker = touchedOneOnOne()
+
+    // Apart again, but each track has come out on the other person.
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+    for frame in 26...28 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: personB, 2: personA])
+    }
+
+    // Three samples isn't enough to decide on.
+    #expect(tracker.labels(for: apart(28)) == [1: "P1", 2: "P2"])
+    #expect(tracker.summary.checks == 0)
+
+    tracker.update(frameID: 29, timeSeconds: time(29), tracks: apart(29), samples: [1: personB, 2: personA])
+
+    #expect(tracker.labels(for: apart(29)) == [1: "P2", 2: "P1"])
+    #expect(tracker.summary.checks == 1)
+    #expect(tracker.summary.swaps == 1)
+
+    let record = tracker.record
+    #expect(record.player(forTrack: 1, at: 20)?.number == 1)
+    #expect(record.player(forTrack: 1, at: 21)?.number == 2)
+    #expect(record.player(forTrack: 2, at: 20)?.number == 2)
+    #expect(record.player(forTrack: 2, at: 30)?.number == 1)
+
+    let check = record.checks.first
+    #expect(record.checks.count == 1)
+    #expect(check?.outcome == .swapped)
+    #expect(check?.startFrame == 21)
+    #expect(check?.frame == 29)
+    #expect(check?.startTime == time(21))
+    #expect(check?.time == time(29))
+    #expect(check?.samples == [4, 4])
+    #expect((check?.otherCost ?? .infinity) < (check?.keepCost ?? 0))
+}
+
+@Test("Players who come out of a touch as they went in keep their labels")
+func unswappedTracksAreKept() {
+    var tracker = touchedOneOnOne()
+
+    let apart = { (frame: Int) in [track(1, at: 0.3, first: 1, seen: frame), track(2, at: 0.7, first: 1, seen: frame)] }
+    for frame in 26...29 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: personA, 2: personB])
+    }
+
+    #expect(tracker.labels(for: apart(29)) == [1: "P1", 2: "P2"])
+    #expect(tracker.summary.checks == 1)
+    #expect(tracker.summary.swaps == 0)
+    #expect(tracker.summary.uncertain == 0)
+    #expect(tracker.record.segments.count == 2)
+    #expect(tracker.record.checks.map(\.outcome) == [.kept])
+}
+
+@Test("Two tracks lost in a touch and relinked the wrong way round are put right")
+func wrongRelinksAreCorrected() {
+    var tracker = touchedOneOnOne()
+
+    // Both tracks are lost. The new ones come up nearer each other's last spot, so the
+    // relink by position hands each the wrong player.
+    let fresh = { (frame: Int) in [track(3, at: 0.62, first: 26, seen: frame), track(4, at: 0.38, first: 26, seen: frame)] }
+    tracker.update(frameID: 26, tracks: fresh(26), samples: [3: personA, 4: personB])
+    #expect(tracker.labels(for: fresh(26)) == [3: "P2", 4: "P1"])
+
+    for frame in 27...29 {
+        tracker.update(frameID: frame, tracks: fresh(frame), samples: [3: personA, 4: personB])
+    }
+
+    #expect(tracker.labels(for: fresh(29)) == [3: "P1", 4: "P2"])
+    #expect(tracker.record.player(forTrack: 3, at: 26)?.number == 1)
+    #expect(tracker.summary.relinks == 2)
+    #expect(tracker.summary.swaps == 1)
+}
+
+@Test("When two players look alike, the labels stay and the stretch is marked uncertain")
+func lookalikesAreMarkedUncertain() {
+    var tracker = touchedOneOnOne(first: personB, second: personB)
+
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+    for frame in 26...29 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: personB, 2: personB])
+    }
+
+    #expect(tracker.labels(for: apart(29)) == [1: "P1", 2: "P2"])
+    #expect(tracker.summary.checks == 1)
+    #expect(tracker.summary.swaps == 0)
+    #expect(tracker.summary.uncertain == 1)
+    #expect(tracker.record.uncertain.first?.startFrame == 21)
+    #expect(tracker.record.uncertain.first?.playerIDs.count == 2)
+
+    let check = tracker.record.checks.first
+    #expect(check?.outcome == .tooClose)
+    #expect(check?.keepCost != nil)
+    #expect(check?.keepCost == check?.otherCost)
+}
+
+@Test("Players who never get a clear look in time are marked uncertain")
+func unclearPlayersTimeOut() {
+    var tracker = touchedOneOnOne()
+
+    let apart = { (frame: Int) in [track(1, at: 0.3, first: 1, seen: frame), track(2, at: 0.7, first: 1, seen: frame)] }
+    for frame in 26...110 {
+        tracker.update(frameID: frame, tracks: apart(frame))
+    }
+    #expect(tracker.summary.uncertain == 0)
+
+    for frame in 111...120 {
+        tracker.update(frameID: frame, tracks: apart(frame))
+    }
+    #expect(tracker.summary.uncertain == 1)
+    #expect(tracker.summary.checks == 0)
+
+    let check = tracker.record.checks.first
+    #expect(check?.outcome == .neverClear)
+    #expect(check?.samples == [0, 0])
+    #expect(check?.keepCost == nil)
+}
+
+@Test("Players who touch before there's a clean look at them are logged as having nothing to compare with")
+func touchBeforeAnyLookIsLogged() {
+    var tracker = IdentityTracker(format: .oneOnOne)
+    let apart = { (frame: Int) in [track(1, at: 0.3, first: 1, seen: frame), track(2, at: 0.7, first: 1, seen: frame)] }
+
+    // Two samples each — one short of a look.
+    for frame in 1...2 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: personA, 2: personB])
+    }
+    for frame in 3...5 {
+        tracker.update(frameID: frame, tracks: [track(1, at: 0.48, first: 1, seen: frame), track(2, at: 0.52, first: 1, seen: frame)])
+    }
+    for frame in 6...9 {
+        tracker.update(frameID: frame, tracks: apart(frame), samples: [1: personA, 2: personB])
+    }
+
+    #expect(tracker.record.checks.map(\.outcome) == [.noEarlierLook])
+    #expect(tracker.summary.uncertain == 1)
+}
+
+@Test("Identity records and numbers saved before checks still load")
+func recordsWithoutChecksLoad() throws {
+    let record = #"{"format":"oneOnOne","players":[{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","number":1}],"segments":[{"trackID":1,"playerID":"6F9619FF-8B86-D011-B42D-00C04FC964FF","startFrame":1,"endFrame":10}]}"#
+    let decodedRecord = try JSONDecoder().decode(IdentityRecord.self, from: Data(record.utf8))
+    #expect(decodedRecord.segments.count == 1)
+    #expect(decodedRecord.uncertain.isEmpty)
+    #expect(decodedRecord.checks.isEmpty)
+
+    let summary = #"{"playerCount":2,"playersSeen":2,"relinks":21,"unassignedTracks":4}"#
+    let decodedSummary = try JSONDecoder().decode(IdentityTracker.Summary.self, from: Data(summary.utf8))
+    #expect(decodedSummary.relinks == 21)
+    #expect(decodedSummary.checks == 0)
+    #expect(decodedSummary.uncertain == 0)
+}
+
+@Test("A change that hits both players alike doesn't drown out what tells them apart")
+func sharedChangeDoesNotDilute() {
+    let grey: Colour = (120, 128, 128)
+    let black: Colour = (30, 128, 128)
+    let navy: Colour = (45, 150, 120)
+
+    /// Everything black but the shorts — or, after the touch, under different light.
+    func person(shorts: Colour, rest: Colour) -> AppearanceSample {
+        func solid(_ colour: Colour) -> [Float] {
+            var histogram = [Float](repeating: 0, count: AppearanceSampler.binCount)
+            histogram[AppearanceSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
+            return histogram
+        }
+        return AppearanceSample(
+            bands: [solid(rest), solid(rest), solid(shorts), solid(rest), solid(rest)],
+            height: 0.25,
+            footY: 0.375,
+            aspect: 0.32
+        )
+    }
+
+    // Only the shorts tell them apart.
+    var tracker = touchedOneOnOne(
+        first: person(shorts: navy, rest: black),
+        second: person(shorts: black, rest: black)
+    )
+
+    // Out of the touch swapped, and somewhere the light makes everything but the shorts
+    // read grey for both of them. Unweighted, that shared change makes it too close to call.
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+    for frame in 26...29 {
+        tracker.update(
+            frameID: frame,
+            tracks: apart(frame),
+            samples: [1: person(shorts: black, rest: grey), 2: person(shorts: navy, rest: grey)]
+        )
+    }
+
+    #expect(tracker.record.checks.map(\.outcome) == [.swapped])
+    #expect(tracker.labels(for: apart(29)) == [1: "P2", 2: "P1"])
+}

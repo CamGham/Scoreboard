@@ -102,6 +102,10 @@ struct ShotTimelineView: View {
                     appearanceSection(appearance)
                 }
 
+                if let identities = gameState.identities, !identities.checks.isEmpty {
+                    identityChecksSection(identities)
+                }
+
                 shotsSection
                 
                 if !gameState.abandonedAttempts.isEmpty {
@@ -209,7 +213,12 @@ struct ShotTimelineView: View {
                 LabeledContent(
                     Self.title(for: cue),
                     value: score.compared > 0
-                        ? String(format: "%.0f%% of %d", score.accuracy * 100, score.compared)
+                        ? String(
+                            format: "%.0f%% of %d · weight %.1f",
+                            score.accuracy * 100,
+                            score.compared,
+                            AppearanceSeparation.weight(for: score)
+                        )
                         : "Not measured"
                 )
             }
@@ -217,11 +226,76 @@ struct ShotTimelineView: View {
                 "All together",
                 value: String(format: "%.0f%%", summary.combined.accuracy * 100)
             )
+            if let samples = summary.heightSamples, let spread = summary.footSpread {
+                LabeledContent(
+                    "Height model",
+                    value: String(format: "%d samples, feet over %.0f%% of frame", samples, spread * 100)
+                )
+            }
         } header: {
             Text("Telling players apart")
         } footer: {
-            Text("Each clear sample of a player is checked against that player's recent look and the other players' seen on the same frame. 50% is a coin flip; near 100% means the cue tells them apart. Height is judged against what's typical for that spot on court.")
+            Text("Each clear sample of a player is checked against that player's recent look and the other players' seen on the same frame. 50% is a coin flip; near 100% means the cue tells them apart. The weight is how much the cue counts when identities are checked after players touch. Height is judged against what's typical for that spot on court, once feet have been seen over at least 10% of the frame's height.")
         }
+    }
+
+    private func identityChecksSection(_ record: IdentityRecord) -> some View {
+        Section {
+            ForEach(Array(record.checks.enumerated()), id: \.offset) { _, check in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.when(check) + " · " + Self.players(in: check, record: record))
+                        .font(.subheadline.monospacedDigit())
+                    Text(Self.verdict(check))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Identity checks · " + Self.tally(record.checks))
+        } footer: {
+            Text("Each time players touched. Scrub the review to the time shown and see whether they really came out swapped. Swap ÷ keep compares how far apart the looks were each way round: above 1 favours the labels as they were, below 1 favours swapping. It takes 25% either way to act.")
+        }
+    }
+
+    private static func when(_ check: IdentityCheck) -> String {
+        guard let start = check.startTime else { return "Frame \(check.startFrame)" }
+        let settled = check.time.map { " → " + ShotScrubber.timecode($0) } ?? ""
+        return ShotScrubber.timecode(start) + settled
+    }
+
+    private static func players(in check: IdentityCheck, record: IdentityRecord) -> String {
+        check.playerIDs
+            .map { id in record.players.first { $0.id == id }?.label ?? "?" }
+            .joined(separator: " & ")
+    }
+
+    private static func verdict(_ check: IdentityCheck) -> String {
+        let ratio = check.keepCost.flatMap { keep in
+            check.otherCost.map { other in
+                keep > 0 ? String(format: " · swap ÷ keep %.2f", other / keep) : ""
+            }
+        } ?? ""
+
+        switch check.outcome {
+        case .kept: return "Kept" + ratio
+        case .swapped: return "Swapped" + ratio
+        case .tooClose: return "Too close to call" + ratio
+        case .neverClear:
+            return "Never clear · samples " + check.samples.map(String.init).joined(separator: " / ")
+        case .noEarlierLook: return "No earlier look to compare with"
+        }
+    }
+
+    private static func tally(_ checks: [IdentityCheck]) -> String {
+        let order: [(IdentityCheck.Outcome, String)] = [
+            (.kept, "kept"), (.swapped, "swapped"), (.tooClose, "too close"),
+            (.neverClear, "never clear"), (.noEarlierLook, "no look"),
+        ]
+        return order.compactMap { outcome, name in
+            let count = checks.filter { $0.outcome == outcome }.count
+            return count > 0 ? "\(count) \(name)" : nil
+        }
+        .joined(separator: ", ")
     }
 
     private static func title(for cue: AppearanceSeparation.Cue) -> String {
@@ -256,6 +330,9 @@ struct ShotTimelineView: View {
                     LabeledContent("Players identified", value: "\(identity.playersSeen) of \(identity.playerCount)")
                     LabeledContent("Relinked", value: "\(identity.relinks)")
                     LabeledContent("Tracks with nobody", value: "\(identity.unassignedTracks)")
+                    LabeledContent("Checked after overlaps", value: "\(identity.checks)")
+                    LabeledContent("Swapped", value: "\(identity.swaps)")
+                    LabeledContent("Left uncertain", value: "\(identity.uncertain)")
                 }
             }
             LabeledContent(
@@ -278,7 +355,7 @@ struct ShotTimelineView: View {
             Text("Player tracking")
         } footer: {
             if stats.tracking?.identity != nil {
-                Text("Players followed counts tracks, which break and restart. Relinked is how many of those breaks were joined back up to a player; tracks with nobody were left over once every player was taken. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
+                Text("Players followed counts tracks, which break and restart. Relinked is how many of those breaks were joined back up to a player; tracks with nobody were left over once every player was taken. After players touch, their looks are compared with how they looked before: swapped means they came out the other way round, uncertain means it was too close to call or they never got clear. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
             } else if stats.tracking != nil {
                 Text("Players followed should match the number of people in shot — more means identities broke and restarted. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
             } else {
