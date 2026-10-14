@@ -114,6 +114,10 @@ struct IdentityCheck: Codable, Equatable {
     /// recorded.
     let blocked: [Blocked]?
 
+    /// True when it was settled from one player alone — the only one who ever got clear.
+    /// Nil for checks that compared everyone, and for those from before.
+    let oneSided: Bool?
+
     /// One player's frames after a touch, by the first thing that kept each from being a
     /// clean sample — the same rules `AppearanceSeparation.cleanTracks` applies.
     struct Blocked: Codable, Equatable {
@@ -581,7 +585,7 @@ struct IdentityTracker {
                     waiting.append(group)
                 }
             } else if frameID - group.lastTouchFrame > config.checkTimeoutFrames {
-                log(group, at: frameID, outcome: .neverClear)
+                checkOneSide(group, tracks: byID, at: frameID)
             } else {
                 waiting.append(group)
             }
@@ -690,6 +694,63 @@ struct IdentityTracker {
         return true
     }
 
+    /// Settle a pair when only one of them got clear before the timeout: that player's
+    /// track as it looks now, against both players' looks from before the touch.
+    ///
+    /// From a camera at court level the other one is often simply hidden behind them, or
+    /// gone from shot, and waiting doesn't bring them back. But one clear look is enough to
+    /// say whether the track that stayed in view is who it's labelled as.
+    private mutating func checkOneSide(_ group: Group, tracks byID: [Int: PlayerTrack], at frameID: Int) {
+        let players = group.players.sorted()
+        let clear = players.filter { player in
+            guard let owner = slots[player].owner else { return false }
+            return (appearance.look(ofTrack: owner)?.count ?? 0) >= config.samplesToCheck
+        }
+
+        guard players.count == 2, clear.count == 1,
+              let seen = clear.first,
+              let other = players.first(where: { $0 != seen }),
+              let owner = slots[seen].owner,
+              let track = byID[owner],
+              let now = appearance.look(ofTrack: owner),
+              let ownBefore = slots[seen].recentLook,
+              let otherBefore = slots[other].recentLook,
+              let keep = appearance.distance(now, ownBefore),
+              let swap = appearance.distance(now, otherBefore)
+        else {
+            log(group, at: frameID, outcome: .neverClear)
+            return
+        }
+
+        checks += 1
+
+        if swap < keep * (1 - config.clearMargin) {
+            // The track in view is the other player. If the other player has a track of
+            // their own that just never got clear, it trades with this one.
+            let hidden = slots[other]
+            var changes = [(track: track, player: other)]
+            if let hiddenOwner = hidden.owner, let hiddenTrack = byID[hiddenOwner] {
+                changes.append((track: hiddenTrack, player: seen))
+            }
+            reassign(changes, from: group.startFrame)
+
+            // Otherwise the person out of sight is this player now — last seen where the
+            // other was — and is reclaimed by position when they come back.
+            if slots[seen].owner == track.id {
+                slots[seen].owner = nil
+                slots[seen].lastBox = hidden.lastBox
+                slots[seen].lastSeenFrame = hidden.lastSeenFrame
+            }
+
+            swaps += 1
+            log(group, at: frameID, outcome: .swapped, keepCost: keep, otherCost: swap, oneSided: true)
+        } else if keep < swap * (1 - config.clearMargin) {
+            log(group, at: frameID, outcome: .kept, keepCost: keep, otherCost: swap, oneSided: true)
+        } else {
+            log(group, at: frameID, outcome: .tooClose, keepCost: keep, otherCost: swap, oneSided: true)
+        }
+    }
+
     /// Give each track a different player from `frame` on. A track that started earlier
     /// keeps its old player up to then.
     private mutating func reassign(_ changes: [(track: PlayerTrack, player: Int)], from frame: Int) {
@@ -736,7 +797,8 @@ struct IdentityTracker {
         at frameID: Int,
         outcome: IdentityCheck.Outcome,
         keepCost: Double? = nil,
-        otherCost: Double? = nil
+        otherCost: Double? = nil,
+        oneSided: Bool = false
     ) {
         let players = group.players.sorted()
         let playerIDs = players.map { record.players[$0].id }
@@ -753,7 +815,8 @@ struct IdentityTracker {
             samples: players.map { player in
                 slots[player].owner.flatMap { appearance.look(ofTrack: $0)?.count } ?? 0
             },
-            blocked: players.map { group.blocked[$0] ?? IdentityCheck.Blocked() }
+            blocked: players.map { group.blocked[$0] ?? IdentityCheck.Blocked() },
+            oneSided: oneSided ? true : nil
         ))
 
         switch outcome {

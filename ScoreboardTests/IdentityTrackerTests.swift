@@ -618,3 +618,82 @@ func checkWithoutReasonsLoads() throws {
     #expect(check.samples == [30, 0])
     #expect(check.blocked == nil)
 }
+
+// MARK: - Checking from one side
+
+@Test("When one player stays hidden, the other's look alone settles a swap")
+func hiddenPlayerSwapIsSettledFromOneSide() throws {
+    var tracker = touchedOneOnOne()
+
+    // Only track 1 comes out of the touch — and it's the person who was player two.
+    let inView = { (frame: Int) in track(1, at: 0.7, first: 1, seen: frame) }
+    for frame in 26...115 {
+        tracker.update(frameID: frame, tracks: [inView(frame)], samples: [1: personB])
+    }
+    #expect(tracker.record.checks.isEmpty)
+
+    tracker.update(frameID: 116, tracks: [inView(116)], samples: [1: personB])
+
+    let check = try #require(tracker.record.checks.first)
+    #expect(check.outcome == .swapped)
+    #expect(check.oneSided == true)
+    #expect(tracker.labels(for: [inView(116)]) == [1: "P2"])
+    #expect(tracker.record.player(forTrack: 1, at: 20)?.number == 1)
+    #expect(tracker.record.player(forTrack: 1, at: 21)?.number == 2)
+
+    // The hidden person comes back by where they were last seen, and gets what's left.
+    let returning = track(5, at: 0.5, first: 117, seen: 117)
+    tracker.update(frameID: 117, tracks: [inView(117), returning], samples: [1: personB, 5: personA])
+    #expect(tracker.labels(for: [inView(117), returning]) == [1: "P2", 5: "P1"])
+}
+
+@Test("A player whose track never got clear trades places when the other's look shows a swap")
+func unclearTrackTradesOnOneSidedSwap() throws {
+    var tracker = touchedOneOnOne()
+
+    // Both tracks carry on, but track 2 is never confident enough to sample.
+    let tracks = { (frame: Int) -> [PlayerTrack] in
+        var unsure = track(2, at: 0.3, first: 1, seen: frame)
+        unsure.confidence = 0.4
+        return [track(1, at: 0.7, first: 1, seen: frame), unsure]
+    }
+    for frame in 26...116 {
+        tracker.update(frameID: frame, tracks: tracks(frame), samples: [1: personB])
+    }
+
+    let check = try #require(tracker.record.checks.first)
+    #expect(check.outcome == .swapped)
+    #expect(check.oneSided == true)
+    #expect(tracker.labels(for: tracks(116)) == [1: "P2", 2: "P1"])
+}
+
+@Test("When the one player in view is who they're labelled as, the labels stay")
+func oneSidedCheckKeeps() throws {
+    var tracker = touchedOneOnOne()
+
+    let inView = { (frame: Int) in track(1, at: 0.3, first: 1, seen: frame) }
+    for frame in 26...116 {
+        tracker.update(frameID: frame, tracks: [inView(frame)], samples: [1: personA])
+    }
+
+    let check = try #require(tracker.record.checks.first)
+    #expect(check.outcome == .kept)
+    #expect(check.oneSided == true)
+    #expect(tracker.labels(for: [inView(116)]) == [1: "P1"])
+    #expect(tracker.summary.uncertain == 0)
+}
+
+@Test("A one-sided look that fits both players is too close to call")
+func oneSidedCloseCall() throws {
+    var tracker = touchedOneOnOne()
+
+    let inView = { (frame: Int) in track(1, at: 0.7, first: 1, seen: frame) }
+    for frame in 26...116 {
+        tracker.update(frameID: frame, tracks: [inView(frame)], samples: [1: blurred])
+    }
+
+    let check = try #require(tracker.record.checks.first)
+    #expect(check.outcome == .tooClose)
+    #expect(check.oneSided == true)
+    #expect(tracker.labels(for: [inView(116)]) == [1: "P1"])
+}

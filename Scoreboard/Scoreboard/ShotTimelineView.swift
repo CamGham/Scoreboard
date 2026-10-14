@@ -258,7 +258,7 @@ struct ShotTimelineView: View {
         } header: {
             Text("Identity checks · " + Self.tally(record.checks))
         } footer: {
-            Text("Each time players touched. Scrub the review to the time shown and see whether they really came out swapped. Swap ÷ keep compares how far apart the looks were each way round: above 1 favours the labels as they were, below 1 favours swapping. It takes 25% either way to act.")
+            Text("Each time players touched. Scrub the review to the time shown and see whether they really came out swapped. Swap ÷ keep compares how far apart the looks were each way round: above 1 favours the labels as they were, below 1 favours swapping. It takes 25% either way to act. \"One side\" means only one player got clear in time, so their look alone decided it.")
         }
     }
 
@@ -281,10 +281,12 @@ struct ShotTimelineView: View {
             }
         } ?? ""
 
+        let side = check.oneSided == true ? " · one side" : ""
+
         switch check.outcome {
-        case .kept: return "Kept" + ratio
-        case .swapped: return "Swapped" + ratio
-        case .tooClose: return "Too close to call" + ratio
+        case .kept: return "Kept" + side + ratio
+        case .swapped: return "Swapped" + side + ratio
+        case .tooClose: return "Too close to call" + side + ratio
         case .neverClear:
             return "Never clear · samples " + check.samples.map(String.init).joined(separator: " / ")
         case .noEarlierLook: return "No earlier look to compare with"
