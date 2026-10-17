@@ -31,6 +31,7 @@
 		420E53032C9AC2D100DEDAB4 /* Scoreboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Scoreboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		420E53132C9AC2D200DEDAB4 /* ScoreboardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScoreboardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		420E531D2C9AC2D200DEDAB4 /* ScoreboardUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScoreboardUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		429F4869307F7BCA00DA2C7E /* Scoreboard.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Scoreboard.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -93,6 +94,7 @@
 		420E52FA2C9AC2D100DEDAB4 = {
 			isa = PBXGroup;
 			children = (
+				429F4869307F7BCA00DA2C7E /* Scoreboard.xctestplan */,
 				420E53052C9AC2D100DEDAB4 /* Scoreboard */,
 				420E53162C9AC2D200DEDAB4 /* ScoreboardTests */,
 				420E53202C9AC2D200DEDAB4 /* ScoreboardUITests */,
@@ -525,7 +527,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = DDKCBTC57L;
+				DEVELOPMENT_TEAM = 2D3DVDN3ZA;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = camgham.ScoreboardUITests;
@@ -542,7 +544,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = DDKCBTC57L;
+				DEVELOPMENT_TEAM = 2D3DVDN3ZA;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = camgham.ScoreboardUITests;

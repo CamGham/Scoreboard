@@ -1,0 +1,45 @@
+{
+  "configurations" : [
+    {
+      "id" : "AAA23805-CCCE-4116-BA76-063E87F8804B",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "IDEPreferLogStreaming",
+        "value" : "YES"
+      }
+    ],
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:Scoreboard.xcodeproj",
+      "identifier" : "420E53022C9AC2D100DEDAB4",
+      "name" : "Scoreboard"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:Scoreboard.xcodeproj",
+        "identifier" : "420E53122C9AC2D200DEDAB4",
+        "name" : "ScoreboardTests"
+      }
+    },
+    {
+      "enabled" : false,
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:Scoreboard.xcodeproj",
+        "identifier" : "420E531C2C9AC2D200DEDAB4",
+        "name" : "ScoreboardUITests"
+      }
+    }
+  ],
+  "version" : 1
+}
