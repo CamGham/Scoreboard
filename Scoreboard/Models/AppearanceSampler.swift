@@ -22,6 +22,10 @@ struct AppearanceSample: Equatable {
 
     /// Width over height, in normalized units. A rough reading of build.
     var aspect: CGFloat
+
+    /// The box's horizontal centre, in Vision normalized space: where across the court
+    /// they were, and so what was behind them.
+    var centreX: CGFloat = 0.5
 }
 
 /// Reads a player's colours out of a frame, band by band down their box.
@@ -175,7 +179,8 @@ enum AppearanceSampler {
             bands: bands,
             height: box.height,
             footY: box.minY,
-            aspect: box.height > 0 ? box.width / box.height : 0
+            aspect: box.height > 0 ? box.width / box.height : 0,
+            centreX: box.midX
         )
     }
 

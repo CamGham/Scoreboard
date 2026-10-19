@@ -65,6 +65,10 @@ class VisionTracker {
     /// a format is picked, which leaves tracks as they were.
     @ObservationIgnored private(set) var identityTracker: IdentityTracker?
 
+    /// The identities corrected with the whole clip in view, once it has ended. Nil until
+    /// then — see `finishIdentities()`.
+    @ObservationIgnored private var resolvedIdentities: IdentityRecord?
+
     /// Presentation time of the frame open now, for stamping what is recorded on it.
     @ObservationIgnored private var currentFrameTime: Double?
 
@@ -253,9 +257,15 @@ class VisionTracker {
     /// Who held the ball, frame by frame, for saving with the run.
     var possession: PossessionRecord { possessionTracker.record }
 
-    /// Which track was which player, for saving with the run. Nil when no format was
-    /// picked.
-    var identities: IdentityRecord? { identityTracker?.record }
+    /// Which track was which player, for saving with the run: corrected for the whole clip
+    /// once it has ended, as decided live until then. Nil when no format was picked.
+    var identities: IdentityRecord? { resolvedIdentities ?? identityTracker?.record }
+
+    /// Second-guess the live identities with the whole clip in view — see
+    /// `WholeClipResolver`. Call once the last frame has been analysed, before saving.
+    func finishIdentities() {
+        resolvedIdentities = identityTracker?.resolvedRecord()
+    }
 
     /// Set how many people are on court, which turns on identities. Must be called before
     /// the first frame: a player numbered partway through would be numbered wrongly.

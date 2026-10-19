@@ -178,7 +178,15 @@ struct VideoView: View {
         // seconds spent deciding shouldn't have been wasted.
         .alert("Stop analysing?", isPresented: $showDismissConfirmation) {
             Button("Keep analysing", role: .cancel) { }
-            Button("Stop and save", role: .destructive) { dismiss() }
+            Button("Stop and save", role: .destructive) {
+                // Stopped first, so no frame is moving the identities on while they are
+                // re-solved; the save on the way out then keeps the corrected ones.
+                if let videoProcessor {
+                    videoProcessor.playback = .pause
+                    videoProcessor.tracker.finishIdentities()
+                }
+                dismiss()
+            }
         } message: {
             Text(dismissWarning)
         }
@@ -301,6 +309,8 @@ struct VideoView: View {
         // the user the reviewable version of the clip.
         .onChange(of: videoProcessor?.isComplete ?? false) { _, finished in
             guard finished, let videoProcessor else { return }
+            // Before saving, so the run keeps identities corrected with the whole clip.
+            videoProcessor.tracker.finishIdentities()
             saveRun()
             videoProcessor.tracker.gameState.setPlayerRecords(
                 possession: videoProcessor.tracker.possession,

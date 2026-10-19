@@ -135,6 +135,22 @@ struct IdentityCheck: Codable, Equatable {
     }
 }
 
+/// A stretch the end-of-run pass gave the other players, having seen the whole clip.
+struct IdentityRevision: Codable, Equatable {
+    let startFrame: Int
+    let endFrame: Int
+    let startTime: Double?
+    let endTime: Double?
+    let playerIDs: [UUID]
+
+    /// How far the looks were from the players' looks elsewhere in the clip as now
+    /// labelled, over how far as they were. Below 1 — at most 0.75 — to be moved.
+    let ratio: Double
+
+    /// Tracklets moved together: those on screen at the same time.
+    let tracklets: Int
+}
+
 /// Which track was which player, over the run.
 ///
 /// Everything else in the run — possession, the shooter — records track ids. This sits
@@ -151,6 +167,10 @@ struct IdentityRecord: Codable, Equatable {
     /// Every check after players touched, whatever came of it.
     var checks: [IdentityCheck] = []
 
+    /// What the end-of-run pass moved. Nil when it didn't run — a run stopped early, or
+    /// from before it existed; empty when it ran and moved nothing.
+    var revisions: [IdentityRevision]?
+
     /// The player `trackID` was on `frameID`: the latest of its segments starting on or
     /// before then. Frames past a segment's end still count — the track was coasting, and
     /// was nobody else.
@@ -161,6 +181,29 @@ struct IdentityRecord: Codable, Equatable {
         else { return nil }
 
         return players.first { $0.id == segment.playerID }
+    }
+
+    /// Make `trackID` the player `playerID` from `start` through `end`, and whoever it was
+    /// before straight after.
+    mutating func relabel(track trackID: Int, from start: Int, through end: Int, to playerID: UUID) {
+        let ownSegments = segments.filter { $0.trackID == trackID }
+        guard !ownSegments.isEmpty, start <= end else { return }
+
+        let resuming = player(forTrack: trackID, at: end + 1)
+        let lastFrame = ownSegments.map(\.endFrame).max() ?? end
+
+        // Anything starting inside the stretch is overruled by it.
+        segments.removeAll { $0.trackID == trackID && $0.startFrame >= start && $0.startFrame <= end + 1 }
+
+        segments.append(IdentitySegment(trackID: trackID, playerID: playerID, startFrame: start, endFrame: end))
+        if let resuming, lastFrame > end {
+            segments.append(IdentitySegment(
+                trackID: trackID,
+                playerID: resuming.id,
+                startFrame: end + 1,
+                endFrame: lastFrame
+            ))
+        }
     }
 }
 
@@ -173,6 +216,7 @@ extension IdentityRecord {
         segments = try container.decodeIfPresent([IdentitySegment].self, forKey: .segments) ?? []
         uncertain = try container.decodeIfPresent([UncertainStretch].self, forKey: .uncertain) ?? []
         checks = try container.decodeIfPresent([IdentityCheck].self, forKey: .checks) ?? []
+        revisions = try container.decodeIfPresent([IdentityRevision].self, forKey: .revisions)
     }
 }
 
@@ -328,6 +372,58 @@ struct IdentityTracker {
         )
     }
 
+    /// The record with the whole clip taken into account — see `WholeClipResolver`. For
+    /// once the clip has ended; the live record is left as it was, so this gives the same
+    /// answer however many times it's asked.
+    func resolvedRecord() -> IdentityRecord {
+        var resolved = record
+        guard record.players.count == 2 else {
+            resolved.revisions = []
+            return resolved
+        }
+
+        let tracklets = appearance.allTracklets.compactMap { tracklet -> WholeClipResolver.Tracklet? in
+            guard let first = tracklet.look.firstFrame,
+                  let last = tracklet.look.lastFrame,
+                  let player = record.player(forTrack: tracklet.trackID, at: first),
+                  let index = record.players.firstIndex(where: { $0.id == player.id })
+            else { return nil }
+            return WholeClipResolver.Tracklet(
+                trackID: tracklet.trackID,
+                firstFrame: first,
+                lastFrame: last,
+                player: index,
+                look: tracklet.look
+            )
+        }
+
+        let meter = appearance
+        let result = WholeClipResolver.resolve(tracklets) { meter.distance($0, $1) }
+
+        for (index, tracklet) in tracklets.enumerated() where result.players[index] != tracklet.player {
+            resolved.relabel(
+                track: tracklet.trackID,
+                from: tracklet.firstFrame,
+                through: tracklet.lastFrame,
+                to: record.players[result.players[index]].id
+            )
+        }
+
+        resolved.revisions = result.moves.map { move in
+            let moved = move.tracklets.map { tracklets[$0] }
+            return IdentityRevision(
+                startFrame: moved.map(\.firstFrame).min() ?? 0,
+                endFrame: moved.map(\.lastFrame).max() ?? 0,
+                startTime: moved.compactMap(\.look.firstTime).min(),
+                endTime: moved.compactMap(\.look.lastTime).max(),
+                playerIDs: record.players.map(\.id),
+                ratio: move.ratio,
+                tracklets: moved.count
+            )
+        }
+        return resolved
+    }
+
     /// The player each track is, by track id. A track missing from it has nobody yet.
     func labels(for tracks: [PlayerTrack]) -> [Int: String] {
         var labels: [Int: String] = [:]
@@ -379,7 +475,7 @@ struct IdentityTracker {
 
         assignFreePlayers(to: tracks.filter { unassigned.contains($0.id) }, at: frameID)
 
-        appearance.update(frameID: frameID, tracks: tracks, samples: samples)
+        appearance.update(frameID: frameID, timeSeconds: timeSeconds, tracks: tracks, samples: samples)
 
         // Grouped before looks are refreshed, so a touch freezes each player's look as
         // it was just before.

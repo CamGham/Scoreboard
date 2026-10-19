@@ -697,3 +697,67 @@ func oneSidedCloseCall() throws {
     #expect(check.oneSided == true)
     #expect(tracker.labels(for: [inView(116)]) == [1: "P1"])
 }
+
+// MARK: - End-of-run re-solve
+
+@Test("Re-labelling a stretch of a track changes only that stretch")
+func relabelChangesOnlyTheStretch() {
+    let one = PlayerIdentity(id: UUID(), number: 1)
+    let two = PlayerIdentity(id: UUID(), number: 2)
+    var record = IdentityRecord(
+        format: .oneOnOne,
+        players: [one, two],
+        segments: [IdentitySegment(trackID: 1, playerID: one.id, startFrame: 1, endFrame: 100)]
+    )
+
+    record.relabel(track: 1, from: 40, through: 60, to: two.id)
+
+    #expect(record.player(forTrack: 1, at: 39)?.number == 1)
+    #expect(record.player(forTrack: 1, at: 40)?.number == 2)
+    #expect(record.player(forTrack: 1, at: 60)?.number == 2)
+    #expect(record.player(forTrack: 1, at: 61)?.number == 1)
+    #expect(record.player(forTrack: 1, at: 100)?.number == 1)
+}
+
+@Test("A swap the live check couldn't call is put right once the whole clip has been seen")
+func resolvedRecordFixesAnUnsettledSwap() throws {
+    var tracker = touchedOneOnOne()
+
+    // They come out swapped. At first both read the same, so the live check gives up as
+    // too close — then they're seen clearly for a second.
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+    for frame in 26...40 {
+        tracker.update(frameID: frame, timeSeconds: time(frame), tracks: apart(frame), samples: [1: blurred, 2: blurred])
+    }
+    #expect(tracker.record.checks.map(\.outcome) == [.tooClose])
+
+    for frame in 41...70 {
+        tracker.update(frameID: frame, timeSeconds: time(frame), tracks: apart(frame), samples: [1: personB, 2: personA])
+    }
+
+    let resolved = tracker.resolvedRecord()
+
+    #expect(resolved.player(forTrack: 1, at: 50)?.number == 2)
+    #expect(resolved.player(forTrack: 2, at: 50)?.number == 1)
+    #expect(resolved.player(forTrack: 1, at: 10)?.number == 1)
+    #expect(resolved.revisions?.count == 1)
+    #expect(resolved.revisions?.first?.startFrame == 26)
+
+    // The live record is left as it was, so asking again gives the same answer.
+    #expect(tracker.record.player(forTrack: 1, at: 50)?.number == 1)
+    #expect(tracker.resolvedRecord() == resolved)
+}
+
+@Test("When the live labels already hold up, the re-solve moves nothing")
+func resolvedRecordLeavesGoodLabels() {
+    var tracker = touchedOneOnOne()
+    let apart = { (frame: Int) in [track(1, at: 0.3, first: 1, seen: frame), track(2, at: 0.7, first: 1, seen: frame)] }
+    for frame in 26...50 {
+        tracker.update(frameID: frame, timeSeconds: time(frame), tracks: apart(frame), samples: [1: personA, 2: personB])
+    }
+
+    let resolved = tracker.resolvedRecord()
+
+    #expect(resolved.revisions == [])
+    #expect(resolved.segments == tracker.record.segments)
+}

@@ -98,6 +98,14 @@ struct AppearanceSeparation {
     /// Running averages of one tracklet's samples: what one person looked like over it.
     struct Look {
         private(set) var count = 0
+
+        /// When the samples were taken — first and last — and where across the frame,
+        /// on average. Nil when samples were added without a frame.
+        private(set) var firstFrame: Int?
+        private(set) var lastFrame: Int?
+        private(set) var firstTime: Double?
+        private(set) var lastTime: Double?
+        private var centreXTotal: CGFloat = 0
         private var bandTotals = [[Float]](
             repeating: [Float](repeating: 0, count: AppearanceSampler.binCount),
             count: AppearanceSampler.Band.allCases.count
@@ -108,6 +116,8 @@ struct AppearanceSeparation {
         private var aspectTotal: CGFloat = 0
 
         var meanAspect: CGFloat { count > 0 ? aspectTotal / CGFloat(count) : 0 }
+
+        var meanCentreX: CGFloat { count > 0 ? centreXTotal / CGFloat(count) : 0.5 }
 
         var meanHeightRatio: CGFloat? {
             heightRatioCount > 0 ? heightRatioTotal / CGFloat(heightRatioCount) : nil
@@ -121,9 +131,24 @@ struct AppearanceSeparation {
             return bandTotals[band.rawValue].map { $0 / Float(count) }
         }
 
-        mutating func add(_ sample: AppearanceSample, heightRatio: CGFloat?) {
+        mutating func add(
+            _ sample: AppearanceSample,
+            heightRatio: CGFloat?,
+            frame: Int? = nil,
+            time: Double? = nil
+        ) {
             count += 1
             aspectTotal += sample.aspect
+            centreXTotal += sample.centreX
+
+            if let frame {
+                firstFrame = firstFrame ?? frame
+                lastFrame = frame
+            }
+            if let time {
+                firstTime = firstTime ?? time
+                lastTime = time
+            }
 
             for index in sample.bands.indices where sample.bands[index].contains(where: { $0 > 0 }) {
                 for bin in sample.bands[index].indices {
@@ -146,6 +171,16 @@ struct AppearanceSeparation {
     /// Each visible track's current tracklet, by track id.
     private var tracklets: [Int: Look] = [:]
 
+    /// One tracklet that has ended, kept for the end-of-run pass.
+    struct FinishedTracklet {
+        let trackID: Int
+        let look: Look
+    }
+
+    /// Tracklets that ended with enough samples to be worth comparing, in the order they
+    /// ended.
+    private(set) var finished: [FinishedTracklet] = []
+
     /// Box height against foot position across every clean sample: how tall someone
     /// looks at each distance from the camera.
     private var heightFit = LineFit()
@@ -167,6 +202,15 @@ struct AppearanceSeparation {
 
     /// `track`'s current tracklet: what it has looked like since it last touched anyone.
     func look(ofTrack id: Int) -> Look? { tracklets[id] }
+
+    /// Every tracklet worth comparing: the ones that have ended, then the ones still
+    /// running.
+    var allTracklets: [FinishedTracklet] {
+        finished + tracklets
+            .filter { $0.value.count >= config.samplesBeforeComparing }
+            .sorted { $0.key < $1.key }
+            .map { FinishedTracklet(trackID: $0.key, look: $0.value) }
+    }
 
     /// How different two looks are: a weighted average, over the cues both have, of each
     /// cue's difference scaled by how much it usually varies for one person. Nil if they
@@ -228,15 +272,24 @@ struct AppearanceSeparation {
     /// Move on to `frameID`.
     ///
     /// - Parameters:
+    ///   - timeSeconds: the frame's presentation time, stamped on the tracklets.
     ///   - tracks: the visible tracks, to notice overlaps and ended tracks.
     ///   - samples: this frame's clean samples, by track id. Empty on frames without
     ///     detections.
-    mutating func update(frameID: Int, tracks: [PlayerTrack], samples: [Int: AppearanceSample]) {
-        // An overlap ends a tracklet: whoever comes out of it may not be who went in.
+    mutating func update(
+        frameID: Int,
+        timeSeconds: Double? = nil,
+        tracks: [PlayerTrack],
+        samples: [Int: AppearanceSample]
+    ) {
+        // An overlap ends a tracklet: whoever comes out of it may not be who went in. So
+        // does the track ending.
         let live = Set(tracks.map(\.id))
-        tracklets = tracklets.filter { live.contains($0.key) }
+        for id in tracklets.keys where !live.contains(id) {
+            finish(trackID: id)
+        }
         for track in tracks where Self.isTouching(track, among: tracks, clearance: config.clearance) {
-            tracklets[track.id] = nil
+            finish(trackID: track.id)
         }
 
         let ratios = samples.mapValues { heightRatio(of: $0) }
@@ -251,8 +304,21 @@ struct AppearanceSeparation {
         }
 
         for (id, sample) in samples {
-            tracklets[id, default: Look()].add(sample, heightRatio: ratios[id] ?? nil)
+            tracklets[id, default: Look()].add(
+                sample,
+                heightRatio: ratios[id] ?? nil,
+                frame: frameID,
+                time: timeSeconds
+            )
             heightFit.add(x: sample.footY, y: sample.height)
+        }
+    }
+
+    /// End `trackID`'s tracklet, keeping it if it has enough samples to compare.
+    private mutating func finish(trackID: Int) {
+        guard let look = tracklets.removeValue(forKey: trackID) else { return }
+        if look.count >= config.samplesBeforeComparing {
+            finished.append(FinishedTracklet(trackID: trackID, look: look))
         }
     }
 

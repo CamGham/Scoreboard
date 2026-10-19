@@ -317,3 +317,48 @@ func unweightedUntilJudged() throws {
 
     #expect(try #require(meter.distance(blackShirt, whiteShirt)) > 0)
 }
+
+// MARK: - Keeping tracklets
+
+@Test("A tracklet that ends is kept with when and where it was seen")
+func endedTrackletIsKept() {
+    var meter = AppearanceSeparation()
+    var left = look(feet: blue)
+    left.centreX = 0.3
+    var right = look(feet: white)
+    right.centreX = 0.7
+
+    for frame in 1...5 {
+        meter.update(
+            frameID: frame,
+            timeSeconds: Double(frame) / 30,
+            tracks: [player(1, at: 0.3, seen: frame), player(2, at: 0.7, seen: frame)],
+            samples: [1: left, 2: right]
+        )
+    }
+    #expect(meter.finished.isEmpty)
+    #expect(meter.allTracklets.count == 2)
+
+    // Track 2 ends; track 1 carries on alone.
+    meter.update(frameID: 6, tracks: [player(1, at: 0.3, seen: 6)], samples: [1: left])
+
+    let kept = meter.finished.first
+    #expect(meter.finished.count == 1)
+    #expect(kept?.trackID == 2)
+    #expect(kept?.look.firstFrame == 1)
+    #expect(kept?.look.lastFrame == 5)
+    #expect(kept?.look.firstTime == 1.0 / 30)
+    #expect(abs((kept?.look.meanCentreX ?? 0) - 0.7) < 1e-9)
+    #expect(meter.allTracklets.map(\.trackID) == [2, 1])
+}
+
+@Test("A tracklet too short to compare isn't kept")
+func shortTrackletIsDropped() {
+    var meter = AppearanceSeparation()
+    for frame in 1...2 {
+        meter.update(frameID: frame, tracks: [player(1, at: 0.3, seen: frame)], samples: [1: look(feet: blue)])
+    }
+    meter.update(frameID: 3, tracks: [], samples: [:])
+
+    #expect(meter.finished.isEmpty)
+}

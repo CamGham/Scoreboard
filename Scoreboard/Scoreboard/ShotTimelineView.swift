@@ -102,6 +102,10 @@ struct ShotTimelineView: View {
                     appearanceSection(appearance)
                 }
 
+                if let identities = gameState.identities, let revisions = identities.revisions {
+                    revisionsSection(revisions, record: identities)
+                }
+
                 if let identities = gameState.identities, !identities.checks.isEmpty {
                     identityChecksSection(identities)
                 }
@@ -237,6 +241,39 @@ struct ShotTimelineView: View {
         } footer: {
             Text("Each clear sample of a player is checked against that player's recent look and the other players' seen on the same frame. 50% is a coin flip; near 100% means the cue tells them apart. The weight is how much the cue counts when identities are checked after players touch. Height is judged against what's typical for that spot on court, once feet have been seen over at least 10% of the frame's height.")
         }
+    }
+
+    private func revisionsSection(_ revisions: [IdentityRevision], record: IdentityRecord) -> some View {
+        Section {
+            if revisions.isEmpty {
+                Text("Nothing moved")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(revisions.enumerated()), id: \.offset) { _, revision in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.when(revision) + " · " + record.players.map(\.label).joined(separator: " ↔ "))
+                        .font(.subheadline.monospacedDigit())
+                    Text(String(
+                        format: "%.1f× better · %d %@",
+                        1 / max(revision.ratio, 0.001),
+                        revision.tracklets,
+                        revision.tracklets == 1 ? "stretch" : "stretches"
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Re-solved after the run · \(revisions.count) moved")
+        } footer: {
+            Text("Once the clip ended, every clear stretch of each player was compared with how they looked elsewhere in the clip, at the same spot across the court. These stretches fitted the other player clearly better, so their labels were swapped.")
+        }
+    }
+
+    private static func when(_ revision: IdentityRevision) -> String {
+        guard let start = revision.startTime else { return "Frame \(revision.startFrame)" }
+        let end = revision.endTime.map { " → " + ShotScrubber.timecode($0) } ?? ""
+        return ShotScrubber.timecode(start) + end
     }
 
     private func identityChecksSection(_ record: IdentityRecord) -> some View {
