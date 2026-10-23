@@ -276,8 +276,14 @@ class VisionTracker {
 
     /// Second-guess the live identities with the whole clip in view — see
     /// `WholeClipResolver`. Call once the last frame has been analysed, before saving.
-    func finishIdentities() {
-        resolvedIdentities = identityTracker?.resolvedRecord()
+    ///
+    /// The pass can take a few seconds on a long clip, so it runs off the main thread, on
+    /// a copy of the identities: pause the analysis before calling this.
+    func finishIdentities() async {
+        let tracker = identityTracker
+        resolvedIdentities = await Task.detached(priority: .userInitiated) {
+            tracker?.resolvedRecord()
+        }.value
     }
 
     /// Set how many people are on court, which turns on identities. Must be called before

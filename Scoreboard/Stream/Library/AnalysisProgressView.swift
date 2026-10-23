@@ -268,3 +268,36 @@ struct AnalysisProgressStage: View {
         }
     }
 }
+
+/// Covers the analysis while it wraps up after a pass — identities re-solved, the run
+/// written — so the screen doesn't sit frozen and then vanish.
+///
+/// A spinner rather than a bar: the re-solve repeats until nothing changes, so how long
+/// it will take isn't known up front.
+struct FinishingAnalysisOverlay: View {
+    let step: String
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+                Text("Finishing analysis")
+                    .font(.headline)
+                Text(step)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
+            }
+            .padding(24)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .animation(.default, value: step)
+        }
+        // Nothing underneath should take a tap while the run is being written.
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+}

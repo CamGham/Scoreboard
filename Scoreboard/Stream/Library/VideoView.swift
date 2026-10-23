@@ -49,6 +49,9 @@ struct VideoView: View {
     /// rewrite an unchanged file.
     @State var savedPositionFrames = 0
 
+    /// What the wrap-up after a pass is doing, while it runs. Nil the rest of the time.
+    @State var finishingStep: String?
+
     /// Runs already stored for this video, checked before analysing again.
     @State var existingRuns: [RunMetadata] = []
     @State var showExistingAnalysisAlert = false
@@ -184,12 +187,9 @@ struct VideoView: View {
             Button("Keep analysing", role: .cancel) { }
             Button("Stop and save", role: .destructive) {
                 // Stopped first, so no frame is moving the identities on while they are
-                // re-solved; the save on the way out then keeps the corrected ones.
-                if let videoProcessor {
-                    videoProcessor.playback = .pause
-                    videoProcessor.tracker.finishIdentities()
-                }
-                dismiss()
+                // re-solved.
+                videoProcessor?.playback = .pause
+                finishAnalysis { dismiss() }
             }
         } message: {
             Text(dismissWarning)
@@ -313,15 +313,14 @@ struct VideoView: View {
         // the user the reviewable version of the clip.
         .onChange(of: videoProcessor?.isComplete ?? false) { _, finished in
             guard finished, let videoProcessor else { return }
-            // Before saving, so the run keeps identities corrected with the whole clip.
-            videoProcessor.tracker.finishIdentities()
-            saveRun()
-            videoProcessor.tracker.gameState.setPlayerRecords(
-                possession: videoProcessor.tracker.possession,
-                identities: videoProcessor.tracker.identities,
-                positions: videoProcessor.tracker.positions
-            )
-            showAnalysisReview = true
+            finishAnalysis {
+                videoProcessor.tracker.gameState.setPlayerRecords(
+                    possession: videoProcessor.tracker.possession,
+                    identities: videoProcessor.tracker.identities,
+                    positions: videoProcessor.tracker.positions
+                )
+                showAnalysisReview = true
+            }
         }
         .fullScreenCover(isPresented: $showAnalysisReview) {
             if let videoProcessor, let asset {
@@ -340,6 +339,11 @@ struct VideoView: View {
                     rim: videoProcessor.tracker.gameState.rim ?? truth?.rim,
                     onAttemptsMerged: { saveRun() }
                 )
+            }
+        }
+        .overlay {
+            if let finishingStep {
+                FinishingAnalysisOverlay(step: finishingStep)
             }
         }
         .onDisappear { saveRun() }
@@ -510,12 +514,58 @@ struct VideoView: View {
 
     /// Persist this pass of the detector, with the settings that produced it — accuracy
     /// numbers are meaningless without knowing which configuration they came from.
+    /// Wrap up a pass — re-solve identities with the whole clip, then save — behind an
+    /// overlay, off the main thread, then carry on with `next`.
+    ///
+    /// Both can take seconds on a long clip. Run on the main thread they froze the screen
+    /// with nothing to say why, then closed it all at once.
+    func finishAnalysis(then next: @escaping () -> Void) {
+        guard let videoProcessor else {
+            next()
+            return
+        }
+
+        finishingStep = "Re-checking who's who…"
+        Task {
+            // Before saving, so the run keeps identities corrected with the whole clip.
+            await videoProcessor.tracker.finishIdentities()
+
+            finishingStep = "Saving…"
+            if let pending = pendingSave() {
+                let store = store
+                await Task.detached(priority: .userInitiated) {
+                    Self.write(pending, to: store)
+                }.value
+                savedPositionFrames = pending.positions?.frames.count ?? savedPositionFrames
+            }
+
+            finishingStep = nil
+            next()
+        }
+    }
+
+    /// Everything a save writes, gathered on the main thread so the writing can happen
+    /// off it.
+    struct PendingSave {
+        let run: AnalysisRun
+        let positions: PlayerPositionRecord?
+        let attempts: [ShotAttempt]
+        let capturedAt: Date?
+    }
+
     func saveRun() {
-        guard let assetIdentifier, let videoProcessor else { return }
+        guard let pending = pendingSave() else { return }
+        Self.write(pending, to: store)
+        savedPositionFrames = pending.positions?.frames.count ?? savedPositionFrames
+    }
+
+    /// What saving now would write, or nil when there's nothing to save.
+    func pendingSave() -> PendingSave? {
+        guard let assetIdentifier, let videoProcessor else { return nil }
 
         let gameState = videoProcessor.tracker.gameState
         let attempts = gameState.reviewableAttempts
-        guard !attempts.isEmpty else { return }
+        guard !attempts.isEmpty else { return nil }
 
         // One run id per analysis pass, so repeated saves during a session update the
         // same run rather than piling up near-identical copies.
@@ -533,21 +583,32 @@ struct VideoView: View {
             identities: videoProcessor.tracker.identities
         )
 
-        try? store.saveRun(run)
-
         // Large, and only for replay: written beside the run, and only when there's more
         // of it than last time — a run is saved again for every merged shot.
         let positions = videoProcessor.tracker.positions
-        if positions.frames.count != savedPositionFrames {
-            try? store.savePositions(positions, for: assetIdentifier, runID: id)
-            savedPositionFrames = positions.frames.count
+        return PendingSave(
+            run: run,
+            positions: positions.frames.count != savedPositionFrames ? positions : nil,
+            attempts: attempts,
+            capturedAt: capturedAt
+        )
+    }
+
+    /// Writes a save. Not tied to the main thread, so the finishing step can do it in the
+    /// background.
+    nonisolated static func write(_ pending: PendingSave, to store: ShotStore) {
+        let run = pending.run
+        try? store.saveRun(run)
+
+        if let positions = pending.positions {
+            try? store.savePositions(positions, for: run.assetIdentifier, runID: run.id)
         }
 
         // The library list reads summaries rather than parsing every run.
         try? store.refreshSummary(
-            for: assetIdentifier,
-            attempts: attempts,
-            capturedAt: capturedAt
+            for: run.assetIdentifier,
+            attempts: pending.attempts,
+            capturedAt: pending.capturedAt
         )
     }
 
