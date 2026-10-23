@@ -45,6 +45,10 @@ struct VideoView: View {
     /// Identity of the analysis pass in progress, so repeated saves update one run.
     @State var currentRunID: UUID?
 
+    /// Recorded frames of player positions last written, so saving the run again doesn't
+    /// rewrite an unchanged file.
+    @State var savedPositionFrames = 0
+
     /// Runs already stored for this video, checked before analysing again.
     @State var existingRuns: [RunMetadata] = []
     @State var showExistingAnalysisAlert = false
@@ -314,7 +318,8 @@ struct VideoView: View {
             saveRun()
             videoProcessor.tracker.gameState.setPlayerRecords(
                 possession: videoProcessor.tracker.possession,
-                identities: videoProcessor.tracker.identities
+                identities: videoProcessor.tracker.identities,
+                positions: videoProcessor.tracker.positions
             )
             showAnalysisReview = true
         }
@@ -529,6 +534,14 @@ struct VideoView: View {
         )
 
         try? store.saveRun(run)
+
+        // Large, and only for replay: written beside the run, and only when there's more
+        // of it than last time — a run is saved again for every merged shot.
+        let positions = videoProcessor.tracker.positions
+        if positions.frames.count != savedPositionFrames {
+            try? store.savePositions(positions, for: assetIdentifier, runID: id)
+            savedPositionFrames = positions.frames.count
+        }
 
         // The library list reads summaries rather than parsing every run.
         try? store.refreshSummary(

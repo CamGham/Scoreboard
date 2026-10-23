@@ -92,6 +92,10 @@ final class GameState {
     /// Which track was which player, handed over with `possession` to label its holder.
     private(set) var identities: IdentityRecord?
 
+    /// Where every player was, for drawing them in replay. Kept beside the run rather
+    /// than in it, so it arrives separately — nil until then, and for older runs.
+    private(set) var positions: PlayerPositionRecord?
+
     // Convenience accessors so views don't have to reach through `snapshot`.
     var ballHistory: [BallObservation] { snapshot.ballHistory }
     var rim: HoopGeometry? { snapshot.rim }
@@ -278,7 +282,17 @@ final class GameState {
     }
 
     /// Hand over a finished analysis's possession and identity records.
-    func setPlayerRecords(possession: PossessionRecord?, identities: IdentityRecord?) {
+    /// Hand over a saved run's player positions, loaded from beside it.
+    func setPositions(_ record: PlayerPositionRecord?) {
+        positions = record
+    }
+
+    func setPlayerRecords(
+        possession: PossessionRecord?,
+        identities: IdentityRecord?,
+        positions: PlayerPositionRecord? = nil
+    ) {
+        self.positions = positions
         self.possession = possession
         self.identities = identities
     }
@@ -290,5 +304,6 @@ final class GameState {
         lastMadeFrame = nil
         possession = nil
         identities = nil
+        positions = nil
     }
 }

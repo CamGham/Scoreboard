@@ -384,6 +384,7 @@ struct SavedGameDetailView: View {
 
         if let run = loaded.run {
             gameState.load(run: run, truth: loaded.truth)
+            gameState.setPositions(store.loadPositions(for: summary.assetIdentifier, runID: run.id))
             gameState.onVerdictChanged = { attempt in
                 recordVerdict(attempt)
             }

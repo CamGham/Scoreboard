@@ -58,6 +58,10 @@ class VisionTracker {
     )
     @ObservationIgnored private var previousPlayerSample: PlayerSample?
 
+    /// Where every player track was on each frame with a detection pass, for drawing them
+    /// in replay — see `PlayerPositionRecord`.
+    @ObservationIgnored private(set) var positions = PlayerPositionRecord()
+
     /// Decides who has the ball on every frame — see `PossessionTracker`.
     @ObservationIgnored private(set) var possessionTracker = PossessionTracker()
 
@@ -312,6 +316,7 @@ class VisionTracker {
         }
 
         let visible = playerTracker.visibleTracks
+        positions.record(frameID: frameCounter, time: currentFrameTime, tracks: visible)
 
         if let detections {
             previousPlayerSample = playerDetectionStats.record(

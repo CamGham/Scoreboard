@@ -132,7 +132,8 @@ struct ShotTimelineView: View {
                     onDismiss: { replaying = nil },
                     onVerdict: { gameState.setVerdict($0, for: attempt.id) },
                     possession: gameState.possession,
-                    identities: gameState.identities
+                    identities: gameState.identities,
+                    positions: gameState.positions
                 )
             }
         }
