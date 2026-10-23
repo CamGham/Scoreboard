@@ -9,6 +9,9 @@ import Testing
 import Foundation
 @testable import Scoreboard
 
+/// The sampler with its default settings.
+private let standardSampler = AppearanceSampler()
+
 /// A player-sized box centred on a point, in Vision space.
 private func box(_ x: CGFloat, _ y: CGFloat = 0.5) -> CGRect {
     CGRect(x: x - 0.04, y: y - 0.125, width: 0.08, height: 0.25)
@@ -236,7 +239,7 @@ private typealias Colour = (luma: UInt8, cb: UInt8, cr: UInt8)
 private func appearance(shorts: Colour, feet: Colour) -> AppearanceSample {
     func solid(_ colour: Colour) -> [Float] {
         var histogram = [Float](repeating: 0, count: AppearanceSampler.binCount)
-        histogram[AppearanceSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
+        histogram[standardSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
         return histogram
     }
     let black: Colour = (30, 128, 128)
@@ -516,7 +519,7 @@ func sharedChangeDoesNotDilute() {
     func person(shorts: Colour, rest: Colour) -> AppearanceSample {
         func solid(_ colour: Colour) -> [Float] {
             var histogram = [Float](repeating: 0, count: AppearanceSampler.binCount)
-            histogram[AppearanceSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
+            histogram[standardSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
             return histogram
         }
         return AppearanceSample(

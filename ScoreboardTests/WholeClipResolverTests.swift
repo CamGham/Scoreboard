@@ -9,6 +9,9 @@ import Testing
 import Foundation
 @testable import Scoreboard
 
+/// The sampler with its default settings.
+private let standardSampler = AppearanceSampler()
+
 private typealias Colour = (luma: UInt8, cb: UInt8, cr: UInt8)
 
 private let black: Colour = (30, 128, 128)
@@ -19,7 +22,7 @@ private let leaves: Colour = (110, 100, 90)
 
 private func solid(_ colour: Colour) -> [Float] {
     var histogram = [Float](repeating: 0, count: AppearanceSampler.binCount)
-    histogram[AppearanceSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
+    histogram[standardSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
     return histogram
 }
 

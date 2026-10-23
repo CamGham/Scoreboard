@@ -34,7 +34,7 @@ struct ShooterSighting: Codable, Equatable {
 /// is the shooter.
 enum ShooterLocator {
 
-    struct Config: Equatable {
+    struct Config: Codable, Equatable {
         /// A release further back than this before the attempt opened is too stale to
         /// trust — a late-detected attempt, or possession that lapsed — so no shooter is
         /// recorded. About a second and a half at 30 fps.
@@ -81,5 +81,15 @@ enum ShooterLocator {
             takeOffTime: takeOff.timeSeconds,
             takeOffPoint: CGPoint(x: takeOff.box.midX, y: takeOff.box.minY)
         )
+    }
+}
+
+extension ShooterLocator.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        maxReleaseAgeFrames = try container.decode(.maxReleaseAgeFrames, or: defaults.maxReleaseAgeFrames)
+        takeOffWindowFrames = try container.decode(.takeOffWindowFrames, or: defaults.takeOffWindowFrames)
     }
 }

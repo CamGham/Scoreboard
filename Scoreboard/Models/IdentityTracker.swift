@@ -275,6 +275,12 @@ struct IdentityTracker {
         /// Frames after a touch to wait for those samples before giving up and marking
         /// the stretch uncertain. Three seconds at 30 fps.
         var checkTimeoutFrames = 90
+
+        /// How looks are sampled and compared — see `AppearanceSeparation`.
+        var appearance = AppearanceSeparation.Config()
+
+        /// How the whole clip is re-solved once it ends — see `WholeClipResolver`.
+        var resolver = WholeClipResolver.Config()
     }
 
     /// Numbers for the run, to judge whether identities held.
@@ -305,7 +311,7 @@ struct IdentityTracker {
     private(set) var record: IdentityRecord
 
     /// Samples, tracklets, and how much each cue varies — see `AppearanceSeparation`.
-    private(set) var appearance = AppearanceSeparation()
+    private(set) var appearance: AppearanceSeparation
 
     /// What is known about each player, in the same order as `record.players`.
     private struct Slot {
@@ -355,6 +361,7 @@ struct IdentityTracker {
 
     init(format: GameFormat, config: Config = Config()) {
         self.config = config
+        self.appearance = AppearanceSeparation(config: config.appearance)
         self.record = IdentityRecord(
             format: format,
             players: (1...format.playerCount).map { PlayerIdentity(id: UUID(), number: $0) }
@@ -400,7 +407,7 @@ struct IdentityTracker {
         }
 
         let meter = appearance
-        let result = WholeClipResolver.resolve(tracklets) { meter.distance($0, $1) }
+        let result = WholeClipResolver.resolve(tracklets, config: config.resolver) { meter.distance($0, $1) }
 
         for (index, tracklet) in tracklets.enumerated() where result.players[index] != tracklet.player {
             resolved.relabel(
@@ -942,5 +949,21 @@ extension IdentityTracker.Summary {
         checks = try container.decodeIfPresent(Int.self, forKey: .checks) ?? 0
         swaps = try container.decodeIfPresent(Int.self, forKey: .swaps) ?? 0
         uncertain = try container.decodeIfPresent(Int.self, forKey: .uncertain) ?? 0
+    }
+}
+
+extension IdentityTracker.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        reachSlack = try container.decode(.reachSlack, or: defaults.reachSlack)
+        maxSpeedPerFrame = try container.decode(.maxSpeedPerFrame, or: defaults.maxSpeedPerFrame)
+        samplesToCheck = try container.decode(.samplesToCheck, or: defaults.samplesToCheck)
+        clearMargin = try container.decode(.clearMargin, or: defaults.clearMargin)
+        maxSamplesToCheck = try container.decode(.maxSamplesToCheck, or: defaults.maxSamplesToCheck)
+        checkTimeoutFrames = try container.decode(.checkTimeoutFrames, or: defaults.checkTimeoutFrames)
+        appearance = try container.decode(.appearance, or: defaults.appearance)
+        resolver = try container.decode(.resolver, or: defaults.resolver)
     }
 }

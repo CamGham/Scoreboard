@@ -33,7 +33,7 @@ import Foundation
 /// than two.
 enum WholeClipResolver {
 
-    struct Config: Equatable {
+    struct Config: Codable, Equatable {
         /// Looks of a player each tracklet is compared with: the ones taken nearest to it
         /// across the frame.
         var nearestLooks = 3
@@ -205,5 +205,16 @@ enum WholeClipResolver {
         let distances = nearest.compactMap { distance(tracklets[tracklet].look, tracklets[$0].look) }
         guard !distances.isEmpty else { return nil }
         return distances.reduce(0, +) / Double(distances.count)
+    }
+}
+
+extension WholeClipResolver.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        nearestLooks = try container.decode(.nearestLooks, or: defaults.nearestLooks)
+        clearMargin = try container.decode(.clearMargin, or: defaults.clearMargin)
+        maxFlips = try container.decode(.maxFlips, or: defaults.maxFlips)
     }
 }

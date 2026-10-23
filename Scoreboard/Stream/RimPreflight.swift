@@ -33,15 +33,21 @@ enum RimPreflight {
 
     /// Minimum confidence for a rim box to be counted.
     ///
-    /// Deliberately below the pipeline's general 0.6 bar. A static object sampled many
-    /// times is well served by a run of middling detections, because the median throws
-    /// out the bad ones — and a missing rim costs far more than a slightly noisy one.
-    static let minimumConfidence: Float = 0.4
+    struct Config: Codable, Equatable {
+        /// Frames sampled, spread across the clip.
+        var sampleCount = 12
+
+        /// Deliberately below the pipeline's general 0.6 bar. A static object sampled
+        /// many times is well served by a run of middling detections, because the median
+        /// throws out the bad ones — and a missing rim costs far more than a slightly
+        /// noisy one.
+        var minimumConfidence: Float = 0.4
+    }
 
     static func scan(
         asset: AVAsset,
         model: VNCoreMLModel,
-        sampleCount: Int = 12
+        config: Config = Config()
     ) async -> Result {
 
         let generator = AVAssetImageGenerator(asset: asset)
@@ -54,7 +60,7 @@ enum RimPreflight {
             return Result(geometry: nil, hits: 0, framesSampled: 0)
         }
 
-        let times = sampleTimes(duration: duration.seconds, count: sampleCount)
+        let times = sampleTimes(duration: duration.seconds, count: config.sampleCount)
 
         var tracker = RimTracker()
         var hits = 0
@@ -66,7 +72,7 @@ enum RimPreflight {
             guard let cgImage = try? await generator.image(at: time).image else { continue }
             sampled += 1
 
-            guard let box = detectRim(in: cgImage, model: model) else { continue }
+            guard let box = detectRim(in: cgImage, model: model, minimumConfidence: config.minimumConfidence) else { continue }
 
             if tracker.observe(boundingBox: box, frameID: index) {
                 hits += 1
@@ -88,7 +94,7 @@ enum RimPreflight {
     }
 
     /// Highest-confidence rim box in one frame, in Vision space.
-    private static func detectRim(in image: CGImage, model: VNCoreMLModel) -> CGRect? {
+    private static func detectRim(in image: CGImage, model: VNCoreMLModel, minimumConfidence: Float) -> CGRect? {
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFit
 
@@ -104,5 +110,15 @@ enum RimPreflight {
             .max(by: { $0.confidence < $1.confidence })
 
         return best?.boundingBox
+    }
+}
+
+extension RimPreflight.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        sampleCount = try container.decode(.sampleCount, or: defaults.sampleCount)
+        minimumConfidence = try container.decode(.minimumConfidence, or: defaults.minimumConfidence)
     }
 }

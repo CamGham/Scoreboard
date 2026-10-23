@@ -488,6 +488,25 @@ enum SavedGameSort: String, CaseIterable, Identifiable {
 /// shot detector's settings — so two runs could record identical `ShotDetectorConfig`
 /// values while having been produced by completely different pipelines. Comparing
 /// accuracy between runs is only meaningful if you know what actually differed.
+/// How a run was set up, saved with it so runs can be compared.
+///
+/// Each part of the pipeline keeps its own settings in a `Config` beside its code; this
+/// collects them. Where to change each:
+///
+/// - `shotDetector` — `ShotDetectorConfig` in Models/ShotDetector.swift
+/// - `ballROI`, ball confidences — `BallDetector.Config` in Stream/BallDetector.swift (crop
+///   geometry in `BallROIPredictor.Config`, Models/BallROIPredictor.swift)
+/// - `players` — `PlayerTracker.Config` in Models/PlayerTracker.swift, with the box
+///   filter's in `BoxKalmanFilter.Config`
+/// - `possession` — `PossessionTracker.Config` in Models/PossessionTracker.swift
+/// - `shooter` — `ShooterLocator.Config` in Models/ShooterLocator.swift
+/// - `identity` — `IdentityTracker.Config` in Models/IdentityTracker.swift, with
+///   `AppearanceSeparation.Config` and `WholeClipResolver.Config` inside it
+/// - `appearanceSampler` — `AppearanceSampler.Config` in Models/AppearanceSampler.swift
+/// - `vision` — `VisionTracker.Config` in Stream/VisionTracker.swift
+/// - `rimPreflight` — `RimPreflight.Config` in Stream/RimPreflight.swift
+///
+/// A setting missing from an older run reads as today's default.
 struct RunConfiguration: Codable, Equatable {
 
     /// Where the rim came from, which changes the scoring plane and therefore verdicts.
@@ -506,6 +525,14 @@ struct RunConfiguration: Codable, Equatable {
     var modelIdentifier: String
     var rimSource: RimSource
 
+    var players: PlayerTracker.Config
+    var possession: PossessionTracker.Config
+    var shooter: ShooterLocator.Config
+    var identity: IdentityTracker.Config
+    var appearanceSampler: AppearanceSampler.Config
+    var vision: VisionTracker.Config
+    var rimPreflight: RimPreflight.Config
+
     /// App build that produced the run, to catch changes not captured above.
     var appVersion: String
 
@@ -516,6 +543,13 @@ struct RunConfiguration: Codable, Equatable {
         croppedBallConfidence: Double = 0.25,
         modelIdentifier: String = "unknown",
         rimSource: RimSource = .none,
+        players: PlayerTracker.Config = PlayerTracker.Config(),
+        possession: PossessionTracker.Config = PossessionTracker.Config(),
+        shooter: ShooterLocator.Config = ShooterLocator.Config(),
+        identity: IdentityTracker.Config = IdentityTracker.Config(),
+        appearanceSampler: AppearanceSampler.Config = AppearanceSampler.Config(),
+        vision: VisionTracker.Config = VisionTracker.Config(),
+        rimPreflight: RimPreflight.Config = RimPreflight.Config(),
         appVersion: String = RunConfiguration.currentAppVersion
     ) {
         self.shotDetector = shotDetector
@@ -524,6 +558,13 @@ struct RunConfiguration: Codable, Equatable {
         self.croppedBallConfidence = croppedBallConfidence
         self.modelIdentifier = modelIdentifier
         self.rimSource = rimSource
+        self.players = players
+        self.possession = possession
+        self.shooter = shooter
+        self.identity = identity
+        self.appearanceSampler = appearanceSampler
+        self.vision = vision
+        self.rimPreflight = rimPreflight
         self.appVersion = appVersion
     }
 
@@ -531,6 +572,7 @@ struct RunConfiguration: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case shotDetector, ballROI, fullFrameBallConfidence, croppedBallConfidence
         case modelIdentifier, rimSource, appVersion
+        case players, possession, shooter, identity, appearanceSampler, vision, rimPreflight
     }
 
     init(from decoder: Decoder) throws {
@@ -547,6 +589,13 @@ struct RunConfiguration: Codable, Equatable {
         croppedBallConfidence = value(.croppedBallConfidence, defaults.croppedBallConfidence)
         modelIdentifier = value(.modelIdentifier, defaults.modelIdentifier)
         rimSource = value(.rimSource, defaults.rimSource)
+        players = value(.players, defaults.players)
+        possession = value(.possession, defaults.possession)
+        shooter = value(.shooter, defaults.shooter)
+        identity = value(.identity, defaults.identity)
+        appearanceSampler = value(.appearanceSampler, defaults.appearanceSampler)
+        vision = value(.vision, defaults.vision)
+        rimPreflight = value(.rimPreflight, defaults.rimPreflight)
         appVersion = value(.appVersion, defaults.appVersion)
     }
 
@@ -605,11 +654,50 @@ struct RunConfiguration: Codable, Equatable {
         if rimSource != other.rimSource {
             changes.append("rim \(other.rimSource.rawValue) → \(rimSource.rawValue)")
         }
+        // Everything collected from the pipeline's own configs, compared setting by
+        // setting, so a new or changed setting shows up without listing it here.
+        let sections: [(String, Encodable, Encodable)] = [
+            ("players", players, other.players),
+            ("possession", possession, other.possession),
+            ("shooter", shooter, other.shooter),
+            ("identity", identity, other.identity),
+            ("sampler", appearanceSampler, other.appearanceSampler),
+            ("vision", vision, other.vision),
+            ("rim scan", rimPreflight, other.rimPreflight),
+        ]
+        for (name, mine, theirs) in sections {
+            let now = Self.settings(of: mine)
+            let before = Self.settings(of: theirs)
+            for key in Set(now.keys).union(before.keys).sorted() where now[key] != before[key] {
+                changes.append("\(name).\(key) \(before[key] ?? "–") → \(now[key] ?? "–")")
+            }
+        }
+
         if appVersion != other.appVersion {
             changes.append("build \(other.appVersion) → \(appVersion)")
         }
 
         return changes
+    }
+
+    /// Every setting in `config`, by dotted path, as text.
+    static func settings(of config: Encodable) -> [String: String] {
+        guard let data = try? JSONEncoder().encode(config),
+              let object = try? JSONSerialization.jsonObject(with: data)
+        else { return [:] }
+
+        var flat: [String: String] = [:]
+        func walk(_ value: Any, _ path: String) {
+            if let dictionary = value as? [String: Any] {
+                for (key, child) in dictionary {
+                    walk(child, path.isEmpty ? key : path + "." + key)
+                }
+            } else {
+                flat[path] = "\(value)"
+            }
+        }
+        walk(object, "")
+        return flat
     }
 }
 

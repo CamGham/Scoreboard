@@ -24,18 +24,22 @@ import Foundation
 /// DeepSORT's.
 struct BoxKalmanFilter: Equatable {
 
-    /// Measurement noise, as a fraction of the box's size on that axis.
-    static let measurementWeight = 1.0 / 20
+    struct Config: Codable, Equatable {
+        /// Measurement noise, as a fraction of the box's size on that axis.
+        var measurementWeight = 1.0 / 20
 
-    /// How far the centre may wander from constant velocity per frame, as a fraction of
-    /// the box's size.
-    static let positionNoiseWeight = 1.0 / 20
+        /// How far the centre may wander from constant velocity per frame, as a fraction
+        /// of the box's size.
+        var positionNoiseWeight = 1.0 / 20
 
-    /// How far the velocity may change per frame, as a fraction of the box's size.
-    static let velocityNoiseWeight = 1.0 / 160
+        /// How far the velocity may change per frame, as a fraction of the box's size.
+        var velocityNoiseWeight = 1.0 / 160
 
-    /// How far the width and height may drift per frame, as a fraction of themselves.
-    static let sizeNoiseWeight = 1.0 / 40
+        /// How far the width and height may drift per frame, as a fraction of themselves.
+        var sizeNoiseWeight = 1.0 / 40
+    }
+
+    let config: Config
 
     private var x: AxisFilter
     private var y: AxisFilter
@@ -44,22 +48,23 @@ struct BoxKalmanFilter: Equatable {
 
     /// Start from a single detection. Velocity is unknown, so it starts at zero with
     /// wide uncertainty, and the first few updates settle it.
-    init(box: CGRect) {
+    init(box: CGRect, config: Config = Config()) {
+        self.config = config
         let w = Double(box.width)
         let h = Double(box.height)
 
         x = AxisFilter(
             position: Double(box.midX),
-            positionVariance: pow(2 * Self.measurementWeight * w, 2),
-            velocityVariance: pow(10 * Self.velocityNoiseWeight * w, 2)
+            positionVariance: pow(2 * config.measurementWeight * w, 2),
+            velocityVariance: pow(10 * config.velocityNoiseWeight * w, 2)
         )
         y = AxisFilter(
             position: Double(box.midY),
-            positionVariance: pow(2 * Self.measurementWeight * h, 2),
-            velocityVariance: pow(10 * Self.velocityNoiseWeight * h, 2)
+            positionVariance: pow(2 * config.measurementWeight * h, 2),
+            velocityVariance: pow(10 * config.velocityNoiseWeight * h, 2)
         )
-        width = LevelFilter(value: w, variance: pow(2 * Self.measurementWeight * w, 2))
-        height = LevelFilter(value: h, variance: pow(2 * Self.measurementWeight * h, 2))
+        width = LevelFilter(value: w, variance: pow(2 * config.measurementWeight * w, 2))
+        height = LevelFilter(value: h, variance: pow(2 * config.measurementWeight * h, 2))
     }
 
     /// The current estimate, in the same space as the detections.
@@ -86,16 +91,16 @@ struct BoxKalmanFilter: Equatable {
 
         x.predict(
             dt: dt,
-            positionNoise: pow(Self.positionNoiseWeight * w, 2),
-            velocityNoise: pow(Self.velocityNoiseWeight * w, 2)
+            positionNoise: pow(config.positionNoiseWeight * w, 2),
+            velocityNoise: pow(config.velocityNoiseWeight * w, 2)
         )
         y.predict(
             dt: dt,
-            positionNoise: pow(Self.positionNoiseWeight * h, 2),
-            velocityNoise: pow(Self.velocityNoiseWeight * h, 2)
+            positionNoise: pow(config.positionNoiseWeight * h, 2),
+            velocityNoise: pow(config.velocityNoiseWeight * h, 2)
         )
-        width.predict(dt: dt, noise: pow(Self.sizeNoiseWeight * w, 2))
-        height.predict(dt: dt, noise: pow(Self.sizeNoiseWeight * h, 2))
+        width.predict(dt: dt, noise: pow(config.sizeNoiseWeight * w, 2))
+        height.predict(dt: dt, noise: pow(config.sizeNoiseWeight * h, 2))
     }
 
     /// Fold in a detection of this box.
@@ -103,10 +108,10 @@ struct BoxKalmanFilter: Equatable {
         let w = Double(box.width)
         let h = Double(box.height)
 
-        x.update(measurement: Double(box.midX), noise: pow(Self.measurementWeight * w, 2))
-        y.update(measurement: Double(box.midY), noise: pow(Self.measurementWeight * h, 2))
-        width.update(measurement: w, noise: pow(Self.measurementWeight * w, 2))
-        height.update(measurement: h, noise: pow(Self.measurementWeight * h, 2))
+        x.update(measurement: Double(box.midX), noise: pow(config.measurementWeight * w, 2))
+        y.update(measurement: Double(box.midY), noise: pow(config.measurementWeight * h, 2))
+        width.update(measurement: w, noise: pow(config.measurementWeight * w, 2))
+        height.update(measurement: h, noise: pow(config.measurementWeight * h, 2))
     }
 }
 
@@ -185,5 +190,17 @@ private struct LevelFilter: Equatable {
         let gain = variance / total
         value += gain * (measurement - value)
         variance *= (1 - gain)
+    }
+}
+
+extension BoxKalmanFilter.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        measurementWeight = try container.decode(.measurementWeight, or: defaults.measurementWeight)
+        positionNoiseWeight = try container.decode(.positionNoiseWeight, or: defaults.positionNoiseWeight)
+        velocityNoiseWeight = try container.decode(.velocityNoiseWeight, or: defaults.velocityNoiseWeight)
+        sizeNoiseWeight = try container.decode(.sizeNoiseWeight, or: defaults.sizeNoiseWeight)
     }
 }

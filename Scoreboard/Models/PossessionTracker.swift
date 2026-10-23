@@ -335,3 +335,16 @@ struct PossessionTracker {
         }
     }
 }
+
+extension PossessionTracker.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        reachUp = try container.decode(.reachUp, or: defaults.reachUp)
+        reachSide = try container.decode(.reachSide, or: defaults.reachSide)
+        reachDown = try container.decode(.reachDown, or: defaults.reachDown)
+        sightingsToSwitch = try container.decode(.sightingsToSwitch, or: defaults.sightingsToSwitch)
+        maxUnseenFrames = try container.decode(.maxUnseenFrames, or: defaults.maxUnseenFrames)
+    }
+}

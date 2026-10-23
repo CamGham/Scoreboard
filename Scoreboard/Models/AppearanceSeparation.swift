@@ -41,7 +41,7 @@ struct AppearanceSeparation {
         }
     }
 
-    struct Config: Equatable {
+    struct Config: Codable, Equatable {
         /// Confidence a detection needs for its player to be sampled.
         var minimumConfidence: Float = 0.6
 
@@ -464,5 +464,19 @@ struct AppearanceSeparation {
             let intercept = (sumY - slope * sumX) / n
             return intercept + slope * x
         }
+    }
+}
+
+extension AppearanceSeparation.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        minimumConfidence = try container.decode(.minimumConfidence, or: defaults.minimumConfidence)
+        clearance = try container.decode(.clearance, or: defaults.clearance)
+        samplesBeforeComparing = try container.decode(.samplesBeforeComparing, or: defaults.samplesBeforeComparing)
+        heightModelSamples = try container.decode(.heightModelSamples, or: defaults.heightModelSamples)
+        heightModelSpread = try container.decode(.heightModelSpread, or: defaults.heightModelSpread)
+        comparisonsBeforeWeighting = try container.decode(.comparisonsBeforeWeighting, or: defaults.comparisonsBeforeWeighting)
     }
 }

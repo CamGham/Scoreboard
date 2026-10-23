@@ -34,53 +34,65 @@ struct AppearanceSample: Equatable {
 /// Colour is read straight from those, with no conversion of the frame. Each box is read
 /// at a fixed grid of points rather than every pixel, so a player near the camera costs
 /// no more than one far away.
-enum AppearanceSampler {
+struct AppearanceSampler {
 
-    /// Horizontal slices of a player's box, top to bottom — a rough body layout for
-    /// someone standing upright.
-    enum Band: Int, CaseIterable {
-        case head, torso, shorts, legs, feet
+    struct Config: Codable, Equatable {
+        /// Points read across and down each box.
+        var columns = 16
+        var rows = 48
 
-        /// Where the band starts and ends, as fractions of the box's height from the top.
-        var span: (top: CGFloat, bottom: CGFloat) {
-            switch self {
-            case .head: (0, 0.12)
-            case .torso: (0.12, 0.45)
-            case .shorts: (0.45, 0.62)
-            case .legs: (0.62, 0.90)
-            case .feet: (0.90, 1)
-            }
-        }
+        /// Where each band ends, as a fraction of the box's height from the top, in
+        /// `Band` order — a rough body layout for someone standing upright.
+        var bandBottoms: [CGFloat] = [0.12, 0.45, 0.62, 0.90, 1]
 
-        /// Share of the box's width read, centred. Narrower than the box to keep out the
-        /// floor either side; wider at the feet, which spread apart.
-        var widthFraction: CGFloat { self == .feet ? 0.8 : 0.6 }
+        /// Share of the box's width read in each band, centred. Narrower than the box to
+        /// keep out what's either side; wider at the feet, which spread apart.
+        var bandWidths: [CGFloat] = [0.6, 0.6, 0.6, 0.6, 0.8]
+
+        /// Below this brightness a pixel is black whatever its colour: very dark pixels
+        /// carry almost no colour, and what there is is noise.
+        var darkLuma: UInt8 = 24
+
+        /// Colour strength below which a pixel counts as colourless, and above which it
+        /// counts as vivid. Distances from the neutral point of the colour plane.
+        var colourlessRadius: Float = 12
+        var vividRadius: Float = 40
+
+        /// Brightness at which a colourless pixel stops being black and becomes grey, and
+        /// stops being grey and becomes white.
+        var greyFromLuma: UInt8 = 80
+        var whiteFromLuma: UInt8 = 180
     }
 
-    /// Points read across and down each box.
-    static let columns = 16
-    static let rows = 48
+    /// Horizontal slices of a player's box, top to bottom.
+    enum Band: Int, CaseIterable {
+        case head, torso, shorts, legs, feet
+    }
 
-    /// Three colourless bins — black, grey, white — then 12 hues at two strengths.
+    /// Three colourless bins — black, grey, white — then 12 hues at two strengths. Fixed
+    /// rather than configured: every saved look is laid out this way.
     static let binCount = 3 + hueSectors * 2
 
     private static let hueSectors = 12
 
-    /// Below this brightness a pixel is black whatever its colour: very dark pixels carry
-    /// almost no colour, and what there is is noise.
-    private static let darkLuma: UInt8 = 24
+    let config: Config
 
-    /// Colour strength below which a pixel counts as colourless, and above which it
-    /// counts as vivid. Distances from the neutral point of the colour plane.
-    private static let colourlessRadius: Float = 12
-    private static let vividRadius: Float = 40
+    /// Bin for every (Cb, Cr) pair, or `colourless` when the colour is too weak to have a
+    /// reliable hue. Built once per sampler: an angle per pixel would otherwise be the
+    /// most expensive thing here.
+    private let chromaTable: [UInt8]
+
+    init(config: Config = Config()) {
+        self.config = config
+        self.chromaTable = Self.chromaTable(for: config)
+    }
 
     /// Each box's appearance on this frame, in the order given. Nil if the frame isn't
     /// 8-bit bi-planar YCbCr.
     ///
     /// - Parameter boxes: in Vision normalized space, relative to the frame as displayed
     ///   — the same space as the detections.
-    static func samples(
+    func samples(
         of boxes: [CGRect],
         in pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
@@ -113,17 +125,15 @@ enum AppearanceSampler {
     }
 
     /// Which histogram bin a pixel's colour falls in.
-    static func bin(luma: UInt8, cb: UInt8, cr: UInt8) -> Int {
-        guard luma >= darkLuma else { return 0 }
+    func bin(luma: UInt8, cb: UInt8, cr: UInt8) -> Int {
+        guard luma >= config.darkLuma else { return 0 }
 
         let chroma = chromaTable[Int(cb) << 8 | Int(cr)]
-        guard chroma == colourless else { return Int(chroma) }
+        guard chroma == Self.colourless else { return Int(chroma) }
 
-        switch luma {
-        case ..<80: return 0
-        case ..<180: return 1
-        default: return 2
-        }
+        if luma < config.greyFromLuma { return 0 }
+        if luma < config.whiteFromLuma { return 1 }
+        return 2
     }
 
     // MARK: Reading
@@ -137,25 +147,27 @@ enum AppearanceSampler {
         let height: Int
     }
 
-    private static func sample(
+    private func sample(
         box: CGRect,
         planes: Planes,
         orientation: CGImagePropertyOrientation
     ) -> AppearanceSample {
-        var bands = [[Float]](repeating: [Float](repeating: 0, count: binCount), count: Band.allCases.count)
-        var counts = [Float](repeating: 0, count: Band.allCases.count)
+        let bandCount = Band.allCases.count
+        var bands = [[Float]](repeating: [Float](repeating: 0, count: Self.binCount), count: bandCount)
+        var counts = [Float](repeating: 0, count: bandCount)
 
-        for row in 0..<rows {
-            let down = (CGFloat(row) + 0.5) / CGFloat(rows)
-            let band = Band.allCases.first { down < $0.span.bottom } ?? .feet
+        for row in 0..<config.rows {
+            let down = (CGFloat(row) + 0.5) / CGFloat(config.rows)
+            let band = config.bandBottoms.firstIndex { down < $0 } ?? bandCount - 1
+            let width = band < config.bandWidths.count ? config.bandWidths[band] : 0.6
 
-            for column in 0..<columns {
-                let across = 0.5 + ((CGFloat(column) + 0.5) / CGFloat(columns) - 0.5) * band.widthFraction
+            for column in 0..<config.columns {
+                let across = 0.5 + ((CGFloat(column) + 0.5) / CGFloat(config.columns) - 0.5) * width
 
                 // Vision space has its origin bottom-left, so the top of the box is maxY.
                 let displayX = box.minX + across * box.width
                 let displayY = 1 - (box.maxY - down * box.height)
-                let (x, y) = bufferPoint(displayX: displayX, displayY: displayY, orientation: orientation)
+                let (x, y) = Self.bufferPoint(displayX: displayX, displayY: displayY, orientation: orientation)
 
                 guard x >= 0, x < 1, y >= 0, y < 1 else { continue }
 
@@ -166,8 +178,9 @@ enum AppearanceSampler {
                 let cb = planes.chroma[chroma]
                 let cr = planes.chroma[chroma + 1]
 
-                bands[band.rawValue][bin(luma: luma, cb: cb, cr: cr)] += 1
-                counts[band.rawValue] += 1
+                let slot = min(band, bandCount - 1)
+                bands[slot][bin(luma: luma, cb: cb, cr: cr)] += 1
+                counts[slot] += 1
             }
         }
 
@@ -204,24 +217,38 @@ enum AppearanceSampler {
 
     private static let colourless: UInt8 = .max
 
-    /// Bin for every (Cb, Cr) pair, or `colourless` when the colour is too weak to have a
-    /// reliable hue. Built once: an angle per pixel would otherwise be the most expensive
-    /// thing here.
-    private static let chromaTable: [UInt8] = {
+    private static func chromaTable(for config: Config) -> [UInt8] {
         var table = [UInt8](repeating: colourless, count: 256 * 256)
         for cb in 0..<256 {
             for cr in 0..<256 {
                 let u = Float(cb) - 128
                 let v = Float(cr) - 128
                 let radius = hypot(u, v)
-                guard radius >= colourlessRadius else { continue }
+                guard radius >= config.colourlessRadius else { continue }
 
                 let turn = (atan2(v, u) + .pi) / (2 * .pi)
                 let sector = min(Int(turn * Float(hueSectors)), hueSectors - 1)
-                let vivid = radius >= vividRadius ? 1 : 0
+                let vivid = radius >= config.vividRadius ? 1 : 0
                 table[cb << 8 | cr] = UInt8(3 + sector * 2 + vivid)
             }
         }
         return table
-    }()
+    }
+}
+
+extension AppearanceSampler.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        columns = try container.decode(.columns, or: defaults.columns)
+        rows = try container.decode(.rows, or: defaults.rows)
+        bandBottoms = try container.decode(.bandBottoms, or: defaults.bandBottoms)
+        bandWidths = try container.decode(.bandWidths, or: defaults.bandWidths)
+        darkLuma = try container.decode(.darkLuma, or: defaults.darkLuma)
+        colourlessRadius = try container.decode(.colourlessRadius, or: defaults.colourlessRadius)
+        vividRadius = try container.decode(.vividRadius, or: defaults.vividRadius)
+        greyFromLuma = try container.decode(.greyFromLuma, or: defaults.greyFromLuma)
+        whiteFromLuma = try container.decode(.whiteFromLuma, or: defaults.whiteFromLuma)
+    }
 }

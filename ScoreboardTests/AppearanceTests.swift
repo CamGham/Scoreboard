@@ -10,6 +10,9 @@ import Foundation
 import CoreVideo
 @testable import Scoreboard
 
+/// The sampler with its default settings.
+private let standardSampler = AppearanceSampler()
+
 private typealias YCbCr = (luma: UInt8, cb: UInt8, cr: UInt8)
 
 private let blue: YCbCr = (80, 200, 100)
@@ -52,7 +55,7 @@ private func frame(width: Int, height: Int, colour: (Int, Int) -> YCbCr) -> CVPi
 }
 
 private func share(of colour: YCbCr, in histogram: [Float]) -> Float {
-    histogram[AppearanceSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)]
+    histogram[standardSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)]
 }
 
 private func band(_ band: AppearanceSampler.Band, of sample: AppearanceSample) -> [Float] {
@@ -68,7 +71,7 @@ func feetColourIsRead() throws {
 
     // Covers rows 16 to 112, so its bottom tenth is all blue.
     let box = CGRect(x: 0.25, y: 0.125, width: 0.5, height: 0.75)
-    let sample = try #require(AppearanceSampler.samples(of: [box], in: buffer, orientation: .up)?.first)
+    let sample = try #require(standardSampler.samples(of: [box], in: buffer, orientation: .up)?.first)
 
     #expect(share(of: blue, in: band(.feet, of: sample)) == 1)
     #expect(share(of: blue, in: band(.head, of: sample)) == 0)
@@ -82,26 +85,26 @@ func rotatedFrameIsRead() throws {
     let buffer = frame(width: 128, height: 64) { x, _ in x >= 116 ? blue : black }
     let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
 
-    let turned = try #require(AppearanceSampler.samples(of: [whole], in: buffer, orientation: .right)?.first)
+    let turned = try #require(standardSampler.samples(of: [whole], in: buffer, orientation: .right)?.first)
     #expect(share(of: blue, in: band(.feet, of: turned)) == 1)
     #expect(share(of: blue, in: band(.head, of: turned)) == 0)
 
-    let unturned = try #require(AppearanceSampler.samples(of: [whole], in: buffer, orientation: .up)?.first)
+    let unturned = try #require(standardSampler.samples(of: [whole], in: buffer, orientation: .up)?.first)
     #expect(share(of: blue, in: band(.feet, of: unturned)) < 0.2)
 }
 
 @Test("Very dark pixels count as black whatever their colour")
 func darkPixelsAreBlack() {
-    #expect(AppearanceSampler.bin(luma: 15, cb: 170, cr: 100) == 0)
-    #expect(AppearanceSampler.bin(luma: 60, cb: 128, cr: 130) == 0)
-    #expect(AppearanceSampler.bin(luma: 235, cb: 128, cr: 128) == 2)
-    #expect(AppearanceSampler.bin(luma: 80, cb: 200, cr: 100) >= 3)
+    #expect(standardSampler.bin(luma: 15, cb: 170, cr: 100) == 0)
+    #expect(standardSampler.bin(luma: 60, cb: 128, cr: 130) == 0)
+    #expect(standardSampler.bin(luma: 235, cb: 128, cr: 128) == 2)
+    #expect(standardSampler.bin(luma: 80, cb: 200, cr: 100) >= 3)
 }
 
 @Test("Navy and black land in different bins")
 func navyIsNotBlack() {
-    let navy = AppearanceSampler.bin(luma: 45, cb: 150, cr: 120)
-    let black = AppearanceSampler.bin(luma: 30, cb: 128, cr: 128)
+    let navy = standardSampler.bin(luma: 45, cb: 150, cr: 120)
+    let black = standardSampler.bin(luma: 30, cb: 128, cr: 128)
     #expect(navy != black)
 }
 
@@ -109,7 +112,7 @@ func navyIsNotBlack() {
 func otherFormatIsSkipped() {
     var created: CVPixelBuffer?
     CVPixelBufferCreate(kCFAllocatorDefault, 8, 8, kCVPixelFormatType_32BGRA, nil, &created)
-    let samples = AppearanceSampler.samples(
+    let samples = standardSampler.samples(
         of: [CGRect(x: 0, y: 0, width: 1, height: 1)],
         in: created!,
         orientation: .up
@@ -129,7 +132,7 @@ private func look(
 ) -> AppearanceSample {
     func solid(_ colour: YCbCr) -> [Float] {
         var histogram = [Float](repeating: 0, count: AppearanceSampler.binCount)
-        histogram[AppearanceSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
+        histogram[standardSampler.bin(luma: colour.luma, cb: colour.cb, cr: colour.cr)] = 1
         return histogram
     }
     return AppearanceSample(

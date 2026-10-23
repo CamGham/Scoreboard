@@ -75,26 +75,36 @@ final class BallDetector {
 
     private let model: VNCoreMLModel
 
-    /// Crop geometry in use. Recorded with the run, because it changes what gets found.
-    let config: BallROIPredictor.Config
+    struct Config: Codable, Equatable {
+        /// Crop geometry. Recorded with the run, because it changes what gets found.
+        var roi = BallROIPredictor.Config()
 
-    /// Confidence floor when sweeping the full frame.
-    let fullFrameConfidence: Float = 0.45
+        /// Confidence floor when sweeping the full frame.
+        var fullFrameConfidence: Float = 0.45
 
-    /// Confidence floor inside the crop.
-    ///
-    /// Lower on purpose. Location is already strongly constrained by the prediction, so
-    /// a middling box in the right place is far more likely to be the ball than the same
-    /// score anywhere in a full frame.
-    let croppedConfidence: Float = 0.25
+        /// Confidence floor inside the crop.
+        ///
+        /// Lower on purpose. Location is already strongly constrained by the prediction,
+        /// so a middling box in the right place is far more likely to be the ball than the
+        /// same score anywhere in a full frame.
+        var croppedConfidence: Float = 0.25
+    }
+
+    let settings: Config
+
+    /// Crop geometry in use.
+    var config: BallROIPredictor.Config { settings.roi }
+
+    var fullFrameConfidence: Float { settings.fullFrameConfidence }
+    var croppedConfidence: Float { settings.croppedConfidence }
 
     private(set) var consecutiveMisses = 0
     private(set) var stats = BallDetectionStats()
     private(set) var lastMode: Mode = .searching
 
-    init(model: VNCoreMLModel, config: BallROIPredictor.Config = BallROIPredictor.Config()) {
+    init(model: VNCoreMLModel, settings: Config = Config()) {
         self.model = model
-        self.config = config
+        self.settings = settings
     }
 
     /// Parts of the frame whose sightings are thrown away. See `ExclusionZone` — and
