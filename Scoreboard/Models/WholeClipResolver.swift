@@ -40,7 +40,7 @@ enum WholeClipResolver {
 
         /// How much better flipped has to fit than as labelled to be moved — the same as
         /// the live checks.
-        var clearMargin = 0.25
+        var clearMargin = 0.15
 
         /// Flips at most, so a pass can't go round in circles.
         var maxFlips = 200

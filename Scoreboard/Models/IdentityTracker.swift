@@ -144,7 +144,7 @@ struct IdentityRevision: Codable, Equatable {
     let playerIDs: [UUID]
 
     /// How far the looks were from the players' looks elsewhere in the clip as now
-    /// labelled, over how far as they were. Below 1 — at most 0.75 — to be moved.
+    /// labelled, over how far as they were. Below 1 — at most 0.85 — to be moved.
     let ratio: Double
 
     /// Tracklets moved together: those on screen at the same time.
@@ -262,8 +262,10 @@ struct IdentityTracker {
         /// About 0.4 s with a detection pass every third frame.
         var samplesToCheck = 4
 
-        /// How much closer one way round has to fit than the other to be acted on.
-        var clearMargin = 0.25
+        /// How much closer one way round has to fit than the other to be acted on. Was 25%;
+        /// close calls kept leaning the right way — a swap the log showed at 0.82 really
+        /// was one — so 15% acts on them.
+        var clearMargin = 0.15
 
         /// Clean samples to wait for, at most, when neither way round fits clearly better
         /// yet. About 1.5 s — inside the timeout, so a check that is gathering samples

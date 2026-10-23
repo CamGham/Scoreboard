@@ -295,7 +295,7 @@ struct ShotTimelineView: View {
         } header: {
             Text("Identity checks · " + Self.tally(record.checks))
         } footer: {
-            Text("Each time players touched. Scrub the review to the time shown and see whether they really came out swapped. Swap ÷ keep compares how far apart the looks were each way round: above 1 favours the labels as they were, below 1 favours swapping. It takes 25% either way to act. \"One side\" means only one player got clear in time, so their look alone decided it.")
+            Text("Each time players touched. Scrub the review to the time shown and see whether they really came out swapped. Swap ÷ keep compares how far apart the looks were each way round: above 1 favours the labels as they were, below 1 favours swapping. It takes 15% either way to act. \"One side\" means only one player got clear in time, so their look alone decided it.")
         }
     }
 

@@ -96,7 +96,7 @@ func wrongStretchIsFlipped() {
     #expect(result.players == [0, 1, 0, 1, 0, 1, 0, 1, 0, 1])
     #expect(result.moves.count == 1)
     #expect(result.moves.first?.tracklets == [4, 5])
-    #expect((result.moves.first?.ratio ?? 1) < 0.75)
+    #expect((result.moves.first?.ratio ?? 1) < 0.85)
 }
 
 @Test("A stretch that fits both players equally stays as labelled")
