@@ -21,7 +21,23 @@ struct SavedGamesView<Header: View>: View {
 
     @AppStorage("savedGamesSort") private var sort = SavedGameSort.analysed
 
+    /// Asks for a game to be brought into view — after an analysis is saved.
+    @Environment(AppNavigation.self) private var navigation: AppNavigation?
+
+    /// The row flashed after being brought into view, so the eye finds it.
+    @State private var highlighted: String?
+
     var body: some View {
+        ScrollViewReader { proxy in
+            list
+                .onChange(of: navigation?.gameToShow, initial: true) { _, game in
+                    guard let game else { return }
+                    show(game, with: proxy)
+                }
+        }
+    }
+
+    private var list: some View {
         List {
             header
                 .libraryRow()
@@ -39,7 +55,11 @@ struct SavedGamesView<Header: View>: View {
                     .libraryRow()
 
                 ForEach(sort.sorted(summaries)) { summary in
-                    SavedGameListRow(summary: summary, store: store, sort: sort) {
+                    SavedGameListRow(
+                        summary: summary,
+                        sort: sort,
+                        isHighlighted: highlighted == summary.id
+                    ) {
                         delete(summary)
                     }
                 }
@@ -47,6 +67,13 @@ struct SavedGamesView<Header: View>: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // By route rather than by view, so the stack can be popped from outside — see
+        // `AppNavigation`.
+        .navigationDestination(for: SavedGameRoute.self) { route in
+            if let summary = summaries.first(where: { $0.id == route.assetIdentifier }) {
+                SavedGameDetailView(summary: summary, store: store) { delete(summary) }
+            }
+        }
         .animation(.default, value: sort)
         .task {
             reload()
@@ -79,6 +106,24 @@ struct SavedGamesView<Header: View>: View {
 
     private func reload() {
         summaries = store.summaries()
+    }
+
+    /// Reload — the game may be new, or its totals changed — then scroll its row to the
+    /// middle and flash it.
+    private func show(_ game: String, with proxy: ScrollViewProxy) {
+        reload()
+        navigation?.gameToShow = nil
+
+        Task { @MainActor in
+            // Let the analysis screen slide away, and any open game pop back to the list,
+            // so the scroll and the flash are seen. Tuned by eye.
+            try? await Task.sleep(for: .milliseconds(350))
+            withAnimation { proxy.scrollTo(game, anchor: .center) }
+
+            withAnimation(.easeIn(duration: 0.2)) { highlighted = game }
+            try? await Task.sleep(for: .seconds(1.2))
+            withAnimation(.easeOut(duration: 0.6)) { highlighted = nil }
+        }
     }
 
     /// Games saved before recording dates were kept don't have one. Fill them in from
@@ -141,20 +186,27 @@ private extension View {
 /// anchored to the row being deleted.
 private struct SavedGameListRow: View {
     let summary: SavedGameSummary
-    let store: ShotStore
     let sort: SavedGameSort
+
+    /// Flashed after being brought into view.
+    var isHighlighted = false
+
     let onDelete: () -> Void
 
     @State private var isConfirmingDelete = false
 
     var body: some View {
-        NavigationLink {
-            SavedGameDetailView(summary: summary, store: store, onDelete: onDelete)
-        } label: {
+        NavigationLink(value: SavedGameRoute(assetIdentifier: summary.assetIdentifier)) {
             SavedGameRow(summary: summary, sort: sort)
         }
-        // Standard row, but over the screen's gradient rather than white.
-        .listRowBackground(Color.clear)
+        // Standard row, but over the screen's gradient rather than white. The highlight is
+        // always there and only its opacity changes: a List swaps a row's background
+        // rather than fading it, so changing the colour itself snapped on and off.
+        .listRowBackground(
+            Color.accentColor
+                .opacity(isHighlighted ? 0.25 : 0)
+                .animation(isHighlighted ? .easeIn(duration: 0.2) : .easeOut(duration: 0.6), value: isHighlighted)
+        )
         // Not `role: .destructive` — that removes the row straight away, before the
         // confirmation has been answered.
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {

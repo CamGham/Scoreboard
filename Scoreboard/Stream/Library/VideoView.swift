@@ -17,6 +17,9 @@ enum AssetState {
 }
 struct VideoView: View {
     @Environment(\.dismiss) var dismiss
+
+    /// For handing over to the dashboard once a run is saved. Absent in previews.
+    @Environment(AppNavigation.self) private var navigation: AppNavigation?
     
     @State var asset: AVURLAsset?
     @State var assetIdentifier: String?
@@ -173,7 +176,7 @@ struct VideoView: View {
                 if isAnalysisUnfinished {
                     showDismissConfirmation = true
                 } else {
-                    dismiss()
+                    close()
                 }
             } label: {
                 Image(systemName: "xmark")
@@ -189,7 +192,7 @@ struct VideoView: View {
                 // Stopped first, so no frame is moving the identities on while they are
                 // re-solved.
                 videoProcessor?.playback = .pause
-                finishAnalysis { dismiss() }
+                finishAnalysis { close() }
             }
         } message: {
             Text(dismissWarning)
@@ -514,6 +517,14 @@ struct VideoView: View {
 
     /// Persist this pass of the detector, with the settings that produced it — accuracy
     /// numbers are meaningless without knowing which configuration they came from.
+    /// Leave the analysis. If a run was saved, go to its game on the dashboard.
+    func close() {
+        dismiss()
+
+        guard currentRunID != nil, let assetIdentifier else { return }
+        navigation?.showSavedGame(assetIdentifier)
+    }
+
     /// Wrap up a pass — re-solve identities with the whole clip, then save — behind an
     /// overlay, off the main thread, then carry on with `next`.
     ///

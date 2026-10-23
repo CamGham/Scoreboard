@@ -8,10 +8,19 @@
 import SwiftUI
 
 struct ScoreboardTabView: View {
-    @State var tabSelection: Tabs = .scoreboard
+    @State private var navigation = AppNavigation()
+
     var body: some View {
+        tabs
+            .environment(navigation)
+    }
+
+    @ViewBuilder
+    private var tabs: some View {
+        @Bindable var navigation = navigation
+
         if #available(iOS 18.0, *) {
-            TabView(selection: $tabSelection) {
+            TabView(selection: $navigation.tab) {
                 Tab(Tabs.scoreboard.name, systemImage: Tabs.scoreboard.symbol, value: Tabs.scoreboard) {
                     ScoreboardView()
                 }
@@ -22,7 +31,7 @@ struct ScoreboardTabView: View {
             }
             .tabViewStyle(.sidebarAdaptable)
         } else {
-            TabView(selection: $tabSelection) {
+            TabView(selection: $navigation.tab) {
                 ScoreboardView()
                     .tabItem {
                         Label(Tabs.scoreboard.name, systemImage: Tabs.scoreboard.symbol)

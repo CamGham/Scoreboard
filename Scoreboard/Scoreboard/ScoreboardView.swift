@@ -10,8 +10,18 @@ import SwiftUI
 struct ScoreboardView: View {
     private let store = ShotStore()
 
+    /// Owns what's pushed, so finishing an analysis can come back to the list. Absent in
+    /// previews, which keep their own.
+    @Environment(AppNavigation.self) private var navigation: AppNavigation?
+    @State private var previewPath: [SavedGameRoute] = []
+
+    private var path: Binding<[SavedGameRoute]> {
+        guard let navigation else { return $previewPath }
+        return Binding(get: { navigation.dashboardPath }, set: { navigation.dashboardPath = $0 })
+    }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: path) {
             
             SavedGamesView(store: store) {
                 GroupBox {
