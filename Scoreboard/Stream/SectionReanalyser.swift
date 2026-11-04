@@ -88,7 +88,29 @@ final class SectionReanalyser {
         // Pausing is for looking at a frame. With nothing on screen to look at there is
         // nothing to pause for, and a pass left paused behind a disabled close button
         // would be a dead end.
-        if !isOn { activeProcessor?.playback = .resume }
+        if !isOn { activeProcessor?.resume() }
+    }
+
+    /// Whether the app is away from the screen. Kept so a section that starts while it is
+    /// away starts held, rather than reading frames in the background.
+    private var isAway = false
+
+    /// Hold the pass while the app is away, and pick it up again on return — but only a
+    /// pause made here: one the user made stays.
+    func sceneChanged(isActive: Bool) {
+        isAway = !isActive
+        guard let processor = activeProcessor else { return }
+
+        switch ScenePause.action(
+            isActive: isActive,
+            playback: processor.playback,
+            reason: processor.pauseReason
+        ) {
+        case .pause: processor.pause(.systemTriggered)
+        // Only the flag: `drive` owns the loop and starts it again itself.
+        case .resume: processor.resume()
+        case .none: break
+        }
     }
 
     /// Whether the pass in progress is paused on a frame.
@@ -102,7 +124,11 @@ final class SectionReanalyser {
     /// here would have two readers pulling from the same output.
     func togglePlayback() {
         guard let processor = activeProcessor else { return }
-        processor.playback = processor.playback == .resume ? .pause : .resume
+        if processor.playback == .resume {
+            processor.pause(.userInitiated)
+        } else {
+            processor.resume()
+        }
     }
 
     /// Apply blocked-out areas to the pass in progress, so the rest of the window is
@@ -165,6 +191,9 @@ final class SectionReanalyser {
                     exclusions: exclusions,
                     watching: isWatching
                 )
+
+                // Built while the app was away: held until it comes back.
+                if isAway { processor.pause(.systemTriggered) }
 
                 activeProcessor = processor
 
@@ -304,7 +333,9 @@ final class SectionReanalyser {
             }
         }
 
-        processor.playback = .resume
+        // A processor held before it started — the app was away — stays held; the wait
+        // below starts it once something resumes it.
+        if processor.pauseReason == nil { processor.resume() }
 
         // Runs the same loop the first pass ran, and stops when the range is exhausted —
         // `readNextFrame` pauses and calls `clear()`, which resolves anything still open.

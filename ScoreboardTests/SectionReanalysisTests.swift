@@ -260,6 +260,48 @@ func rangedPassCoversOnlyItsWindow() async throws {
     #expect(reported.allSatisfy { $0 >= 0 && $0 <= 1 })
 }
 
+@Test("Running out of frames pauses the pass as finished, not as something to resume")
+func finishedPassPausesAsEndOfClip() async throws {
+    let url = try await makeTestClip(seconds: 1)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let processor = try await VideoProcessor.create(
+        videoAsset: AVURLAsset(url: url),
+        producesPreviewFrames: false
+    )
+
+    processor.resume()
+    await processor.play()
+
+    #expect(processor.isComplete)
+    #expect(processor.playback == .pause)
+    #expect(processor.pauseReason == .endOfClip)
+}
+
+@Test("A paused pass reads nothing when asked to play")
+func pausedPassReadsNoFrames() async throws {
+    let url = try await makeTestClip(seconds: 1)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let processor = try await VideoProcessor.create(
+        videoAsset: AVURLAsset(url: url),
+        producesPreviewFrames: false
+    )
+    let before = processor.frames
+
+    processor.pause(.userInitiated)
+    await processor.play()
+
+    #expect(processor.frames == before)
+    #expect(processor.pauseReason == .userInitiated)
+
+    // And the loop it briefly claimed is free again: resuming reads to the end.
+    processor.resume()
+    await processor.play()
+
+    #expect(processor.isComplete)
+}
+
 // MARK: - The pass's own tally
 
 @Test("Collecting a pass's results doesn't silence its own shot tally")

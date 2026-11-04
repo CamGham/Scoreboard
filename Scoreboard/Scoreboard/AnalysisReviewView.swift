@@ -63,6 +63,9 @@ struct AnalysisReviewView: View {
     /// is what's in the way.
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
+    /// Whether the app is on screen, for holding a re-analysis while it is away.
+    @Environment(\.scenePhase) private var scenePhase
+
     private var isCompactHeight: Bool { verticalSizeClass == .compact }
 
     @State private var reanalyser = SectionReanalyser()
@@ -107,6 +110,9 @@ struct AnalysisReviewView: View {
         .statusBarHidden()
         // Same reason as the first pass: a re-analysis can't run with the phone locked.
         .keepsScreenAwake(reanalyser.isRunning && !reanalyser.isPaused)
+        .onChange(of: scenePhase) { _, phase in
+            reanalyser.sceneChanged(isActive: phase == .active)
+        }
         .onAppear {
             let review = AnalysisReviewPlayer(asset: asset)
             player = review

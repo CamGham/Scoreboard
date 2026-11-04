@@ -19,10 +19,56 @@ enum PlaybackState {
     case resume
 }
 
+/// Why a pass is paused — which decides whether it may pick up again by itself.
+enum PauseReason {
+    /// The user stopped it: the pause button, Stop and save, opening the blocked-area
+    /// editor. Stays paused until they carry on.
+    case userInitiated
+
+    /// The app left the screen. Resumes when it comes back.
+    case systemTriggered
+
+    /// The reader ran out of frames. Never resumes: there is nothing left to read, and
+    /// another go round the loop would end the shot stream a second time.
+    case endOfClip
+}
+
+/// What a pass should do when the app moves into or out of the foreground.
+enum ScenePause {
+    enum Action: Equatable {
+        case pause
+        case resume
+        case none
+    }
+
+    /// - Parameter isActive: whether the app is the active, on-screen app. Anything else —
+    ///   Control Center, the app switcher, another app, the phone locked — counts as away.
+    static func action(isActive: Bool, playback: PlaybackState, reason: PauseReason?) -> Action {
+        if isActive {
+            // Only a pause the app made itself is undone. A pass the user paused before
+            // leaving is still paused when they get back.
+            return playback == .pause && reason == .systemTriggered ? .resume : .none
+        }
+        // Already paused keeps its reason: leaving the app mustn't turn the user's pause
+        // into one that resumes on return.
+        return playback == .resume ? .pause : .none
+    }
+}
+
 @Observable
 class VideoProcessor {
     var currentFrame: Image?
     var playback = PlaybackState.pause
+
+    /// Why the pass is paused. Nil while it runs, and before it has started. Set through
+    /// `pause(_:)` and cleared by `resume()`.
+    private(set) var pauseReason: PauseReason?
+
+    /// Guards `isLooping`, and the loop's decision to stop — see `play()`.
+    @ObservationIgnored private let loopLock = NSLock()
+
+    /// Whether a frame loop is running. Only touched under `loopLock`.
+    @ObservationIgnored private var isLooping = false
 
     /// True once the reader has run out of frames — the whole clip has been analysed.
     ///
@@ -211,15 +257,16 @@ class VideoProcessor {
 
         guard let sampleBuffer = sample,
               let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            playback = .pause
-
             // A nil sample means either the end of the clip or a reader that gave up.
             // Only the former counts as a finished analysis; the status lags the last
             // sample by a moment, so `.reading` here still means it ran to the end.
             switch videoReader.status {
             case .failed, .cancelled:
-                break
+                // Paused with no reason, so nothing resumes it: a stopped reader can't
+                // be read again.
+                loopLock.withLock { playback = .pause }
             default:
+                pause(.endOfClip)
                 isComplete = true
             }
 
@@ -245,8 +292,33 @@ class VideoProcessor {
         return buff
     }
     
+    /// Hold the pass, saying why.
+    func pause(_ reason: PauseReason) {
+        loopLock.withLock {
+            playback = .pause
+            pauseReason = reason
+        }
+    }
+
+    /// Let the pass carry on. Only flips the flag: a loop still finishing its last frame
+    /// picks it up, otherwise the caller starts one with `play()`.
+    func resume() {
+        loopLock.withLock {
+            playback = .resume
+            pauseReason = nil
+        }
+    }
+
+    /// Analyse frames until paused or out of frames.
+    ///
+    /// Only one loop ever runs. Pausing lets the current frame finish, so a quick pause
+    /// and resume — Control Center pulled down and let go — can call this while the last
+    /// loop is still mid-frame. Two loops would pull from one reader into one tracker,
+    /// which isn't safe, so a call made while a loop is running returns at once.
     func play() async {
-        while playback == .resume {
+        guard claimLoop() else { return }
+
+        while continueLoop() {
             autoreleasepool {
                 PipelineSignpost.measure("Frame") {
                     guard let buf = readNextFrame() else {
@@ -266,7 +338,29 @@ class VideoProcessor {
             }
         }
     }
-    
+
+    /// Takes the frame loop, or returns false when one is already running.
+    private func claimLoop() -> Bool {
+        loopLock.withLock {
+            guard !isLooping else { return false }
+            isLooping = true
+            return true
+        }
+    }
+
+    /// Whether the loop should take another frame.
+    ///
+    /// Gives the loop up in the same locked step as deciding to stop, so a resume landing
+    /// at that moment either keeps this loop going or finds it gone and starts a new one —
+    /// never both, and never neither.
+    private func continueLoop() -> Bool {
+        loopLock.withLock {
+            if playback == .resume { return true }
+            isLooping = false
+            return false
+        }
+    }
+
 }
 
 

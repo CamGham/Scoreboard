@@ -18,6 +18,10 @@ enum AssetState {
 struct VideoView: View {
     @Environment(\.dismiss) var dismiss
 
+    /// Whether the app is on screen. A pass can't run in the background, so it is held
+    /// while the app is away and picked up again on return.
+    @Environment(\.scenePhase) private var scenePhase
+
     /// For handing over to the dashboard once a run is saved. Absent in previews.
     @Environment(AppNavigation.self) private var navigation: AppNavigation?
     
@@ -191,7 +195,7 @@ struct VideoView: View {
             Button("Stop and save", role: .destructive) {
                 // Stopped first, so no frame is moving the identities on while they are
                 // re-solved.
-                videoProcessor?.playback = .pause
+                videoProcessor?.pause(.userInitiated)
                 finishAnalysis { close() }
             }
         } message: {
@@ -350,6 +354,20 @@ struct VideoView: View {
             }
         }
         .keepsScreenAwake(isAnalysing)
+        .onChange(of: scenePhase) { _, phase in
+            // Only a pass that has been started has anything to hold or pick up again.
+            guard hasStartedAnalysis, let videoProcessor else { return }
+
+            switch ScenePause.action(
+                isActive: phase == .active,
+                playback: videoProcessor.playback,
+                reason: videoProcessor.pauseReason
+            ) {
+            case .pause: videoProcessor.pause(.systemTriggered)
+            case .resume: resume(videoProcessor)
+            case .none: break
+            }
+        }
         .onDisappear { saveRun() }
     }
 
@@ -408,7 +426,7 @@ struct VideoView: View {
             // noticed, so the fix is offered right here — spelled out, because a bare
             // "no entry" glyph doesn't say what it would do to the analysis.
             Button {
-                withAnimation { videoProcessor.playback = .pause }
+                withAnimation { videoProcessor.pause(.userInitiated) }
                 showZoneEditor = true
             } label: {
                 Label(blockedAreasLabel, systemImage: "nosign")
@@ -487,7 +505,7 @@ struct VideoView: View {
         if videoProcessor.playback == .pause {
             resume(videoProcessor)
         } else {
-            withAnimation { videoProcessor.playback = .pause }
+            withAnimation { videoProcessor.pause(.userInitiated) }
         }
     }
 
@@ -501,7 +519,7 @@ struct VideoView: View {
         // rate shown is the rate of the whole pass rather than of the last burst.
         if analysisStartedAt == nil { analysisStartedAt = Date() }
 
-        withAnimation { videoProcessor.playback = .resume }
+        withAnimation { videoProcessor.resume() }
 
         Task.detached(priority: .userInitiated) {
             await videoProcessor.play()
