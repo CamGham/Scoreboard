@@ -349,7 +349,15 @@ struct VideoView: View {
                 FinishingAnalysisOverlay(step: finishingStep)
             }
         }
+        .keepsScreenAwake(isAnalysing)
         .onDisappear { saveRun() }
+    }
+
+    /// Whether frames are being worked through, or the pass is being wrapped up. Locking
+    /// mid-way would send the app to the background, where neither can carry on. A pass
+    /// the user paused can lock like anything else.
+    var isAnalysing: Bool {
+        finishingStep != nil || (hasStartedAnalysis && videoProcessor?.playback == .resume)
     }
 
     /// The controls along the bottom of the analysis view.

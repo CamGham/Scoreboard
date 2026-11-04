@@ -105,6 +105,8 @@ struct AnalysisReviewView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: showsChrome)
         .statusBarHidden()
+        // Same reason as the first pass: a re-analysis can't run with the phone locked.
+        .keepsScreenAwake(reanalyser.isRunning && !reanalyser.isPaused)
         .onAppear {
             let review = AnalysisReviewPlayer(asset: asset)
             player = review

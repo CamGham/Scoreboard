@@ -23,6 +23,8 @@ struct CameraView: View {
         .task {
             await camera.start()
         }
+        // Capture stops when the phone locks, and live analysis is the whole screen.
+        .keepsScreenAwake(true)
         .overlay {
             PlayerTracksOverlay(
                 tracks: camera.tracker.playerTracks,
