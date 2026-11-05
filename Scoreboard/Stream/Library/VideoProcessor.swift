@@ -85,6 +85,32 @@ class VideoProcessor {
     var videoReader: AVAssetReader
     var videoAssetReaderOutput: AVAssetReaderTrackOutput
     var frames = 1
+
+    /// The part of the clip being read — nil for all of it. Kept so a rebuilt reader stops
+    /// where the original would have.
+    private let readRange: CMTimeRange?
+
+    /// Exact presentation time of the last frame handed out, for starting a new reader
+    /// just after it. Nil when that frame had no valid timestamp, or before any frame.
+    @ObservationIgnored private var lastPresentationTime: CMTime?
+
+    /// Whether any frame has been handed out. Tells "nothing read yet" — start again from
+    /// the top — apart from "read, but untimed", which can't be picked up again.
+    @ObservationIgnored private var hasReadFrame = false
+
+    /// After a rebuild, frames up to and including this time have been analysed already.
+    @ObservationIgnored private var skipThrough: CMTime?
+
+    /// Rebuilds since a frame last came through.
+    @ObservationIgnored private var consecutiveRebuilds = 0
+
+    /// A real interruption recovers on the first rebuild. A reader that dies again straight
+    /// after every one is broken in a way a new reader won't fix.
+    static let maxConsecutiveRebuilds = 3
+
+    /// Why reading stopped for good, once it has. Nil while reading, and after a clip that
+    /// simply ran to its end.
+    private(set) var readFailure: (any Error)?
     
     // helpers
     var preferredTransform: CGAffineTransform
@@ -125,6 +151,7 @@ class VideoProcessor {
                  videoTrack: AVAssetTrack,
                  videoReader: AVAssetReader,
                  videoAssetReaderOutput: AVAssetReaderTrackOutput,
+                 readRange: CMTimeRange?,
                  firstFrame: Image?,
                  preferredTransform: CGAffineTransform,
                  orientation: CGImagePropertyOrientation,
@@ -136,6 +163,7 @@ class VideoProcessor {
             self.videoTrack = videoTrack
             self.videoReader = videoReader
             self.videoAssetReaderOutput = videoAssetReaderOutput
+            self.readRange = readRange
             self.currentFrame = firstFrame
             self.preferredTransform = preferredTransform
             self.orientation = orientation
@@ -186,10 +214,7 @@ class VideoProcessor {
         let orientation = Self.orientation(from: preferredTransform)
         
         let videoReader = try AVAssetReader(asset: videoAsset)
-        let outputSetting = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
-        
-        
-        let videoAssetReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSetting)
+        let videoAssetReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
         guard videoReader.canAdd(videoAssetReaderOutput) else {
             throw VideoError.loading
         }
@@ -214,6 +239,7 @@ class VideoProcessor {
             videoTrack: videoTrack,
             videoReader: videoReader,
             videoAssetReaderOutput: videoAssetReaderOutput,
+            readRange: timeRange,
             firstFrame: firstFrame,
             preferredTransform: preferredTransform,
             orientation: orientation,
@@ -221,6 +247,30 @@ class VideoProcessor {
             nominalFrameRate: frameRate,
             producesPreviewFrames: producesPreviewFrames
         )
+    }
+
+    /// Frames as Vision wants them: biplanar YCbCr, which the appearance sampler also reads.
+    /// Shared by the first reader and any rebuilt one, so a rebuilt pass sees the same
+    /// pixels.
+    static var outputSettings: [String: Any] {
+        [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
+    }
+
+    /// Whether a reader that stopped with `error` is worth replacing with a new one.
+    ///
+    /// Only for being cut off — the app going to the background, or iOS restarting its
+    /// media services. A file or decoder that is actually broken fails again at the same
+    /// place, however many readers are built.
+    static func isRecoverable(_ error: (any Error)?) -> Bool {
+        guard let error = error as NSError?, error.domain == AVFoundationErrorDomain else {
+            return false
+        }
+        switch AVError.Code(rawValue: error.code) {
+        case .operationInterrupted, .mediaServicesWereReset:
+            return true
+        default:
+            return false
+        }
     }
 
     /// The orientation a track's preferred transform describes.
@@ -251,29 +301,64 @@ class VideoProcessor {
     private(set) var currentFrameTime: Double?
 
     func readNextFrame() -> CVImageBuffer? {
-        let sample = PipelineSignpost.measure("Decode") {
-            videoAssetReaderOutput.copyNextSampleBuffer()
-        }
-
-        guard let sampleBuffer = sample,
-              let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            // A nil sample means either the end of the clip or a reader that gave up.
-            // Only the former counts as a finished analysis; the status lags the last
-            // sample by a moment, so `.reading` here still means it ran to the end.
-            switch videoReader.status {
-            case .failed, .cancelled:
-                // Paused with no reason, so nothing resumes it: a stopped reader can't
-                // be read again.
-                loopLock.withLock { playback = .pause }
-            default:
-                pause(.endOfClip)
-                isComplete = true
+        // Loops only to step past a reader that was rebuilt, or the frames a rebuilt reader
+        // hands back that were already analysed.
+        while true {
+            let sample = PipelineSignpost.measure("Decode") {
+                videoAssetReaderOutput.copyNextSampleBuffer()
             }
 
-            return nil
-        }
+            guard let sampleBuffer = sample,
+                  let buff = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                // A nil sample means either the end of the clip or a reader that gave up.
+                // Only the former counts as a finished analysis; the status lags the last
+                // sample by a moment, so `.reading` here still means it ran to the end.
+                switch videoReader.status {
+                case .failed, .cancelled:
+                    // Cut off rather than broken: carry on from a new reader as if
+                    // nothing happened.
+                    if videoReader.status == .failed, rebuildReaderIfRecoverable() { continue }
 
-        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                    // Paused with no reason, so nothing resumes it: a stopped reader
+                    // can't be read again.
+                    readFailure = videoReader.error ?? VideoError.loading
+                    loopLock.withLock { playback = .pause }
+                default:
+                    pause(.endOfClip)
+                    isComplete = true
+                }
+
+                return nil
+            }
+
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+            // A rebuilt reader starts from the keyframe before where it was asked to, so its
+            // first frames can be ones already analysed. Analysing one twice would tick the
+            // frame counter with the ball standing still.
+            if let skipThrough {
+                if presentationTime.isValid, CMTimeCompare(presentationTime, skipThrough) <= 0 {
+                    CMSampleBufferInvalidate(sampleBuffer)
+                    continue
+                }
+                self.skipThrough = nil
+            }
+
+            consecutiveRebuilds = 0
+            hasReadFrame = true
+            lastPresentationTime = presentationTime.isValid ? presentationTime : nil
+
+            return handOut(sampleBuffer, buff, at: presentationTime)
+        }
+    }
+
+    /// Records a frame's time, draws its preview if anyone is watching, and returns its
+    /// pixels for analysis.
+    private func handOut(
+        _ sampleBuffer: CMSampleBuffer,
+        _ buff: CVImageBuffer,
+        at presentationTime: CMTime
+    ) -> CVImageBuffer {
         currentFrameTime = presentationTime.isValid ? presentationTime.seconds : nil
 
         if let time = currentFrameTime,
@@ -291,7 +376,54 @@ class VideoProcessor {
         CMSampleBufferInvalidate(sampleBuffer)
         return buff
     }
-    
+
+    /// Replace a reader that was cut off, if this one is worth replacing — see
+    /// `isRecoverable(_:)` and `maxConsecutiveRebuilds`.
+    private func rebuildReaderIfRecoverable() -> Bool {
+        guard Self.isRecoverable(videoReader.error),
+              consecutiveRebuilds < Self.maxConsecutiveRebuilds else { return false }
+
+        consecutiveRebuilds += 1
+        return rebuildReader()
+    }
+
+    /// Start a new reader just after the last frame handed out, and read on from it.
+    ///
+    /// The tracker, and everything it has learnt, carries on untouched: as far as it can
+    /// tell, the next frame simply follows the last one. False when there is nowhere
+    /// exact to pick up from, or the new reader won't start.
+    ///
+    /// Internal rather than private so tests can rebuild part-way through a clip.
+    func rebuildReader() -> Bool {
+        let start: CMTime
+        if let lastPresentationTime {
+            start = lastPresentationTime
+        } else if !hasReadFrame {
+            // Nothing analysed yet: start again from the top.
+            start = readRange?.start ?? .zero
+        } else {
+            // The last frame had no timestamp, so there's no telling where it was.
+            return false
+        }
+
+        guard let reader = try? AVAssetReader(asset: videoAsset) else { return false }
+
+        let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: Self.outputSettings)
+        guard reader.canAdd(output) else { return false }
+        reader.add(output)
+
+        // Must be set before reading starts. A ranged pass stops where it always would.
+        reader.timeRange = readRange.map { CMTimeRange(start: start, end: $0.end) }
+            ?? CMTimeRange(start: start, duration: .positiveInfinity)
+
+        guard reader.startReading() else { return false }
+
+        videoReader = reader
+        videoAssetReaderOutput = output
+        skipThrough = lastPresentationTime
+        return true
+    }
+
     /// Hold the pass, saying why.
     func pause(_ reason: PauseReason) {
         loopLock.withLock {

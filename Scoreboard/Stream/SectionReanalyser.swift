@@ -344,7 +344,11 @@ final class SectionReanalyser {
         // `play()` also returns the moment the user pauses, so returning here would take
         // a pause for a finished window and merge half a section's results. Only the
         // reader running out ends the pass.
-        while !processor.isComplete, processor.videoReader.status != .failed {
+        //
+        // Waits on the processor giving up, not on the reader's status: a reader cut off
+        // while the app is away shows `.failed` here before the read path has had the
+        // chance to replace it.
+        while !processor.isComplete, processor.readFailure == nil {
             try await Task.sleep(for: .milliseconds(120))
 
             if processor.playback == .resume {
@@ -352,7 +356,7 @@ final class SectionReanalyser {
             }
         }
 
-        guard processor.videoReader.status != .failed else { throw Failure.readFailed }
+        guard processor.readFailure == nil else { throw Failure.readFailed }
 
         onProgress(1)
 

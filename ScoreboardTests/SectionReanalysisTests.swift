@@ -302,6 +302,91 @@ func pausedPassReadsNoFrames() async throws {
     #expect(processor.isComplete)
 }
 
+// MARK: - Rebuilding a reader
+
+/// Presentation times of every frame a pass analyses, optionally swapping in a new reader
+/// part-way through — the way an interrupted one is replaced.
+private func analysedTimes(
+    of url: URL,
+    range: CMTimeRange? = nil,
+    rebuildingAfter rebuildFrame: Int? = nil
+) async throws -> [Double] {
+    let processor = try await VideoProcessor.create(
+        videoAsset: AVURLAsset(url: url),
+        timeRange: range,
+        producesPreviewFrames: false
+    )
+
+    var times: [Double] = []
+    processor.onFrameProcessed = { time in
+        if let time { times.append(time) }
+        if times.count == rebuildFrame { processor.pause(.userInitiated) }
+    }
+
+    processor.resume()
+    await processor.play()
+
+    if rebuildFrame != nil {
+        #expect(!processor.isComplete)
+        #expect(processor.rebuildReader())
+        processor.resume()
+        await processor.play()
+    }
+
+    #expect(processor.isComplete)
+    #expect(processor.readFailure == nil)
+    return times
+}
+
+@Test("A rebuilt reader picks up on the very next frame — none repeated, none missed")
+func rebuiltReaderContinuesExactly() async throws {
+    let url = try await makeTestClip(seconds: 2)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let straight = try await analysedTimes(of: url)
+    let rebuilt = try await analysedTimes(of: url, rebuildingAfter: 23)
+
+    #expect(straight.count > 23)
+    #expect(rebuilt == straight)
+}
+
+@Test("A rebuilt reader on a section still stops at the section's end")
+func rebuiltReaderKeepsSectionEnd() async throws {
+    let url = try await makeTestClip(seconds: 3)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let section = CMTimeRange(
+        start: CMTime(seconds: 0.5, preferredTimescale: 600),
+        end: CMTime(seconds: 1.5, preferredTimescale: 600)
+    )
+
+    let straight = try await analysedTimes(of: url, range: section)
+    let rebuilt = try await analysedTimes(of: url, range: section, rebuildingAfter: 10)
+
+    #expect(straight.count > 10)
+    #expect(rebuilt == straight)
+    #expect((rebuilt.last ?? .infinity) < 1.5)
+}
+
+@Test("Only a reader that was cut off is worth rebuilding")
+func recoverableReaderErrors() {
+    func avError(_ code: AVError.Code) -> NSError {
+        NSError(domain: AVFoundationErrorDomain, code: code.rawValue)
+    }
+
+    #expect(VideoProcessor.isRecoverable(avError(.operationInterrupted)))
+    #expect(VideoProcessor.isRecoverable(avError(.mediaServicesWereReset)))
+
+    // Broken, not interrupted: a new reader fails at the same place.
+    #expect(!VideoProcessor.isRecoverable(avError(.decodeFailed)))
+    #expect(!VideoProcessor.isRecoverable(avError(.fileFormatNotRecognized)))
+    #expect(!VideoProcessor.isRecoverable(nil))
+
+    // The same number from another domain means something else entirely.
+    let foreign = NSError(domain: NSCocoaErrorDomain, code: AVError.Code.operationInterrupted.rawValue)
+    #expect(!VideoProcessor.isRecoverable(foreign))
+}
+
 // MARK: - The pass's own tally
 
 @Test("Collecting a pass's results doesn't silence its own shot tally")
