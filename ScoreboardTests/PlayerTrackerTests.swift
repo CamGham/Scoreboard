@@ -232,3 +232,39 @@ func noTrackCap() {
 
     #expect(tracker.visibleTracks.count == 10)
 }
+
+// MARK: - Snapshot
+
+@Test("A player tracker restored part-way follows the players exactly as the original does")
+func playerTrackerResumesPartWay() throws {
+    // One player walking right, one standing still, and a third walking in later — so a
+    // track id is handed out after the restore.
+    let detections = { (frame: Int) -> [PlayerDetection] in
+        var found = [player(0.2 + 0.005 * CGFloat(frame), 0.4), player(0.7, 0.45)]
+        if frame >= 30 { found.append(player(0.9, 0.5)) }
+        return found
+    }
+
+    var original = PlayerTracker()
+    run(&original, frames: 1...20, detections: detections)
+
+    let saved = try snapshotRoundTrip(original.snapshotState)
+    #expect(saved.filters.count == 2)
+
+    var restored = PlayerTracker()
+    restored.restore(from: saved)
+
+    var originalTracks: [[PlayerTrack]] = []
+    var restoredTracks: [[PlayerTrack]] = []
+    for frame in 21...60 {
+        let found = original.isDetectionDue(frameID: frame) ? detections(frame) : nil
+        original.update(frameID: frame, detections: found)
+        restored.update(frameID: frame, detections: found)
+        originalTracks.append(original.visibleTracks)
+        restoredTracks.append(restored.visibleTracks)
+    }
+
+    #expect(original.visibleTracks.count == 3)
+    #expect(restoredTracks == originalTracks)
+    #expect(restored.snapshotState == original.snapshotState)
+}

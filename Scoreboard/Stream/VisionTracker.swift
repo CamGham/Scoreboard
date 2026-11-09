@@ -102,6 +102,10 @@ class VisionTracker {
     /// detector, and a decoy could still pull the moving crop onto itself.
     private var pendingExclusionZones: [ExclusionZone] = []
 
+    /// A restored ball detector's state, kept until the model has loaded and the detector
+    /// exists to take it — the same reason as `pendingExclusionZones`.
+    @ObservationIgnored private var pendingBallDetectorState: BallDetector.State?
+
     init(config: Config = Config(), appearanceSampler: AppearanceSampler = AppearanceSampler()) {
         self.config = config
         self.appearanceSampler = appearanceSampler
@@ -127,6 +131,10 @@ class VisionTracker {
             if let visionModel {
                 ballDetector = BallDetector(model: visionModel)
                 ballDetector?.exclusionZones = pendingExclusionZones
+                if let pendingBallDetectorState {
+                    ballDetector?.restore(from: pendingBallDetectorState)
+                    self.pendingBallDetectorState = nil
+                }
             }
         }
     }
@@ -503,5 +511,86 @@ extension VisionTracker.Config {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = Self()
         rimSampleInterval = try container.decode(.rimSampleInterval, or: defaults.rimSampleInterval)
+    }
+}
+
+// MARK: - Snapshot
+
+extension VisionTracker {
+    /// Everything the pipeline has learnt so far, gathered from each part's own state, so
+    /// whatever saves a snapshot needn't know what is inside. Left out: the model (loaded
+    /// fresh), the configs (the tracker is built with them), blocked areas (reapplied from
+    /// the video's saved data), what the overlay last drew (redrawn on the next frame) and
+    /// the re-solved identities (only made once a clip has ended).
+    struct State: Codable, Equatable {
+        var frameCounter: Int
+        var currentFrameTime: Double?
+        var lastRimSampleFrame: Int?
+
+        var shotTracker: ShotTracker.State
+        var ballDetector: BallDetector.State?
+
+        var playerTracker: PlayerTracker.State
+        var playerDetectionStats: PlayerDetectionStats
+        var previousPlayerSample: PlayerSample?
+        var positions: PlayerPositionRecord
+        var possession: PossessionTracker.State
+
+        /// Nil when no format was picked.
+        var identity: IdentityTracker.State?
+    }
+
+    /// Read only between frames, while nothing is processing one.
+    var snapshotState: State {
+        State(
+            frameCounter: frameCounter,
+            currentFrameTime: currentFrameTime,
+            lastRimSampleFrame: lastRimSampleFrame,
+            shotTracker: shotTracker.snapshotState,
+            ballDetector: ballDetector?.snapshotState ?? pendingBallDetectorState,
+            playerTracker: playerTracker.snapshotState,
+            playerDetectionStats: playerDetectionStats,
+            previousPlayerSample: previousPlayerSample,
+            positions: positions,
+            possession: possessionTracker.snapshotState,
+            identity: identityTracker?.snapshotState
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off. Call before the first frame, instead of
+    /// `setFormat(_:)`: the format comes back with the identities.
+    func restore(from snapshot: State) {
+        frameCounter = snapshot.frameCounter
+        currentFrameTime = snapshot.currentFrameTime
+        lastRimSampleFrame = snapshot.lastRimSampleFrame
+
+        shotTracker.restore(from: snapshot.shotTracker)
+
+        if let state = snapshot.ballDetector {
+            if let ballDetector {
+                ballDetector.restore(from: state)
+            } else {
+                // The model is still loading; the detector takes this when it is built.
+                pendingBallDetectorState = state
+            }
+        }
+
+        playerTracker.restore(from: snapshot.playerTracker)
+        playerDetectionStats = snapshot.playerDetectionStats
+        previousPlayerSample = snapshot.previousPlayerSample
+        positions = snapshot.positions
+        possessionTracker.restore(from: snapshot.possession)
+
+        // Rebuilt from the saved record's format, then given back its players' ids rather
+        // than the new ones a fresh tracker makes up.
+        identityTracker = snapshot.identity.map { state in
+            var tracker = IdentityTracker(
+                format: state.record.format,
+                config: identityTracker?.config ?? IdentityTracker.Config()
+            )
+            tracker.restore(from: state)
+            return tracker
+        }
+        resolvedIdentities = nil
     }
 }

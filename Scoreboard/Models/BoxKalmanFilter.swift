@@ -118,7 +118,9 @@ struct BoxKalmanFilter: Equatable {
 // MARK: - One axis
 
 /// Position and velocity along one axis.
-private struct AxisFilter: Equatable {
+///
+/// Internal rather than private only so a snapshot can hold it; its fields stay private.
+struct AxisFilter: Codable, Equatable {
     private(set) var position: Double
     private(set) var velocity: Double = 0
 
@@ -170,7 +172,9 @@ private struct AxisFilter: Equatable {
 }
 
 /// A value that drifts with no trend of its own — a box's width or height.
-private struct LevelFilter: Equatable {
+///
+/// Internal rather than private only so a snapshot can hold it; its fields stay private.
+struct LevelFilter: Codable, Equatable {
     private(set) var value: Double
     private var variance: Double
 
@@ -202,5 +206,29 @@ extension BoxKalmanFilter.Config {
         positionNoiseWeight = try container.decode(.positionNoiseWeight, or: defaults.positionNoiseWeight)
         velocityNoiseWeight = try container.decode(.velocityNoiseWeight, or: defaults.velocityNoiseWeight)
         sizeNoiseWeight = try container.decode(.sizeNoiseWeight, or: defaults.sizeNoiseWeight)
+    }
+}
+
+// MARK: - Snapshot
+
+extension BoxKalmanFilter {
+    /// The estimate and how sure it is, on every axis. The config isn't here: the filter
+    /// it is restored into is built with it.
+    struct State: Codable, Equatable {
+        var x: AxisFilter
+        var y: AxisFilter
+        var width: LevelFilter
+        var height: LevelFilter
+    }
+
+    var snapshotState: State {
+        State(x: x, y: y, width: width, height: height)
+    }
+
+    mutating func restore(from snapshot: State) {
+        x = snapshot.x
+        y = snapshot.y
+        width = snapshot.width
+        height = snapshot.height
     }
 }

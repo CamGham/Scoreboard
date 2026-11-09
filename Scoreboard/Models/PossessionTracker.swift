@@ -172,8 +172,9 @@ struct PossessionTracker {
 
     private var lastBallFrame: Int?
 
-    /// A challenger being the best candidate on consecutive sightings.
-    private struct Streak {
+    /// A challenger being the best candidate on consecutive sightings. Internal rather
+    /// than private only so a snapshot can hold it.
+    struct Streak: Codable, Equatable {
         let playerID: Int
         var sightings: Int
         /// This player's frames since the streak began, to replace what was recorded
@@ -346,5 +347,40 @@ extension PossessionTracker.Config {
         reachDown = try container.decode(.reachDown, or: defaults.reachDown)
         sightingsToSwitch = try container.decode(.sightingsToSwitch, or: defaults.sightingsToSwitch)
         maxUnseenFrames = try container.decode(.maxUnseenFrames, or: defaults.maxUnseenFrames)
+    }
+}
+
+// MARK: - Snapshot
+
+extension PossessionTracker {
+    /// The record so far, who has the ball, and any challenger part-way to taking it. The
+    /// config isn't here: the tracker it is restored into is built with it.
+    struct State: Codable, Equatable {
+        var record: PossessionRecord
+        var holderID: Int?
+        var lastHolderID: Int?
+        var lastBallFrame: Int?
+
+        /// A switch in progress, with the frames it would hand over. Leaving it out would
+        /// make a challenger start counting again after a restore.
+        var streak: Streak?
+    }
+
+    var snapshotState: State {
+        State(
+            record: record,
+            holderID: holderID,
+            lastHolderID: lastHolderID,
+            lastBallFrame: lastBallFrame,
+            streak: streak
+        )
+    }
+
+    mutating func restore(from snapshot: State) {
+        record = snapshot.record
+        holderID = snapshot.holderID
+        lastHolderID = snapshot.lastHolderID
+        lastBallFrame = snapshot.lastBallFrame
+        streak = snapshot.streak
     }
 }

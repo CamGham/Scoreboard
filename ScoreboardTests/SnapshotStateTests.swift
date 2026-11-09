@@ -19,8 +19,9 @@ private let snapshotRim = HoopGeometry(
 
 private let snapshotBallRadius: CGFloat = 0.022
 
-/// Through the same encoder and decoder a saved snapshot goes through.
-private func roundTrip<T: Codable>(_ value: T) throws -> T {
+/// Through the same encoder and decoder a saved snapshot goes through. Shared with the
+/// round-trip tests beside each component's own tests.
+func snapshotRoundTrip<T: Codable>(_ value: T) throws -> T {
     let data = try SnapshotCoding.encoder().encode(value)
     return try SnapshotCoding.decoder().decode(T.self, from: data)
 }
@@ -84,7 +85,7 @@ func shotTrackerResumesMidFlight() throws {
     let original = RecordedTracker()
     original.feed(shot[..<split], firstFrame: 1)
 
-    let saved = try roundTrip(original.tracker.snapshotState)
+    let saved = try snapshotRoundTrip(original.tracker.snapshotState)
     #expect(saved.detector.currentAttempt != nil, "the split should land mid-attempt")
     #expect(saved.pendingBall != nil, "the last frame's ball is still waiting to be committed")
 
@@ -112,7 +113,7 @@ func rimTrackerRoundTrip() throws {
 
     for rim in [detected, placed] {
         var restored = RimTracker()
-        restored.restore(from: try roundTrip(rim.snapshotState))
+        restored.restore(from: try snapshotRoundTrip(rim.snapshotState))
 
         #expect(restored.snapshotState == rim.snapshotState)
         #expect(restored.geometry == rim.geometry)
@@ -124,7 +125,7 @@ func rimTrackerRoundTrip() throws {
 func motionFitRoundTrip() throws {
     let fit = MotionFit(px: (0.01, 0.4), py: (-0.002, 0.03, 0.8), referenceFrame: 1_204, sampleCount: 18, rmse: .nan)
 
-    let decoded = try roundTrip(fit)
+    let decoded = try snapshotRoundTrip(fit)
 
     #expect(decoded == fit)
     #expect(decoded.isBallistic)
@@ -143,7 +144,7 @@ func gameStateRoundTrip() throws {
 
     let restored = GameState()
     restored.apply(GameSnapshot(sequence: 50))
-    restored.restore(from: try roundTrip(original.snapshotState))
+    restored.restore(from: try snapshotRoundTrip(original.snapshotState))
 
     #expect(restored.snapshotState == original.snapshotState)
     #expect(restored.stats == original.stats)
@@ -167,7 +168,29 @@ func ballDetectorRoundTrip() async throws {
     ))
 
     let restored = BallDetector(model: model)
-    restored.restore(from: try roundTrip(original.snapshotState))
+    restored.restore(from: try snapshotRoundTrip(original.snapshotState))
 
+    #expect(restored.snapshotState == original.snapshotState)
+}
+
+// MARK: - Whole tracker
+
+@Test("A vision tracker's state survives the trip, identities and ball detector included")
+func visionTrackerRoundTrip() async throws {
+    let original = VisionTracker()
+    #expect(await original.awaitVisionModel() != nil)
+    original.setFormat(.oneOnOne)
+
+    let saved = try snapshotRoundTrip(original.snapshotState)
+    #expect(saved.ballDetector != nil)
+    #expect(saved.identity != nil)
+
+    // Restored before its model has loaded: the ball detector's part waits for it.
+    let restored = VisionTracker()
+    restored.restore(from: saved)
+    #expect(restored.snapshotState == original.snapshotState)
+    #expect(restored.identities?.players == original.identities?.players)
+
+    #expect(await restored.awaitVisionModel() != nil)
     #expect(restored.snapshotState == original.snapshotState)
 }

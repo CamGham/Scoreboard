@@ -96,7 +96,7 @@ struct AppearanceSeparation {
     }
 
     /// Running averages of one tracklet's samples: what one person looked like over it.
-    struct Look {
+    struct Look: Codable, Equatable {
         private(set) var count = 0
 
         /// When the samples were taken — first and last — and where across the frame,
@@ -172,7 +172,7 @@ struct AppearanceSeparation {
     private var tracklets: [Int: Look] = [:]
 
     /// One tracklet that has ended, kept for the end-of-run pass.
-    struct FinishedTracklet {
+    struct FinishedTracklet: Codable, Equatable {
         let trackID: Int
         let look: Look
     }
@@ -432,8 +432,9 @@ struct AppearanceSeparation {
 
     // MARK: Accumulators
 
-    /// Least-squares straight line through points added one at a time.
-    private struct LineFit {
+    /// Least-squares straight line through points added one at a time. Internal rather
+    /// than private only so a snapshot can hold it.
+    struct LineFit: Codable, Equatable {
         private(set) var count = 0
         private var sumX: CGFloat = 0
         private var sumY: CGFloat = 0
@@ -478,5 +479,48 @@ extension AppearanceSeparation.Config {
         heightModelSamples = try container.decode(.heightModelSamples, or: defaults.heightModelSamples)
         heightModelSpread = try container.decode(.heightModelSpread, or: defaults.heightModelSpread)
         comparisonsBeforeWeighting = try container.decode(.comparisonsBeforeWeighting, or: defaults.comparisonsBeforeWeighting)
+    }
+}
+
+// MARK: - Snapshot
+
+extension AppearanceSeparation {
+    /// How far a sample usually sits from its own tracklet, for one cue. The live meter
+    /// keeps this as a tuple, which can't be saved.
+    struct Spread: Codable, Equatable {
+        var total: Double
+        var count: Int
+    }
+
+    /// Every look gathered so far, and the scales for comparing them. The config isn't
+    /// here: the meter it is restored into is built with it.
+    struct State: Codable, Equatable {
+        var scores: Summary
+        var tracklets: [Int: Look]
+
+        /// Every finished tracklet — the end-of-run pass re-solves with all of them, so a
+        /// continued pass needs the ones from before it was saved.
+        var finished: [FinishedTracklet]
+
+        var heightFit: LineFit
+        var spread: [Cue: Spread]
+    }
+
+    var snapshotState: State {
+        State(
+            scores: scores,
+            tracklets: tracklets,
+            finished: finished,
+            heightFit: heightFit,
+            spread: spread.mapValues { Spread(total: $0.total, count: $0.count) }
+        )
+    }
+
+    mutating func restore(from snapshot: State) {
+        scores = snapshot.scores
+        tracklets = snapshot.tracklets
+        finished = snapshot.finished
+        heightFit = snapshot.heightFit
+        spread = snapshot.spread.mapValues { (total: $0.total, count: $0.count) }
     }
 }
