@@ -307,3 +307,35 @@ final class GameState {
         positions = nil
     }
 }
+
+// MARK: - Snapshot
+
+extension GameState {
+    /// The shots found so far. The user's rulings aren't here — they are reloaded from
+    /// the video's saved data, as on any pass — and neither is the overlay picture, which
+    /// the next frame redraws.
+    struct State: Codable, Equatable {
+        var shotTimeline: [ShotAttempt]
+        var abandonedAttempts: [ShotAttempt]
+        var lastMadeFrame: Int?
+    }
+
+    var snapshotState: State {
+        State(
+            shotTimeline: shotTimeline,
+            abandonedAttempts: abandonedAttempts,
+            lastMadeFrame: lastMadeFrame
+        )
+    }
+
+    func restore(from snapshot: State) {
+        shotTimeline = snapshot.shotTimeline
+        abandonedAttempts = snapshot.abandonedAttempts
+        lastMadeFrame = snapshot.lastMadeFrame
+
+        // Starts counting overlay pictures again from nothing, so the restored shot
+        // tracker's next one — numbered on from where it left off — is never dropped
+        // as stale.
+        self.snapshot = GameSnapshot()
+    }
+}

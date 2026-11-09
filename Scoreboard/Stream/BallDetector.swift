@@ -66,7 +66,7 @@ struct BallDetectionStats: Codable, Equatable {
 /// every frame instead. (The players later went the same way — see `PlayerTracker`.)
 final class BallDetector {
 
-    enum Mode: Equatable {
+    enum Mode: Codable, Equatable {
         /// No usable prediction — sweep the whole frame.
         case searching
         /// Detect inside a crop around the predicted position.
@@ -287,5 +287,27 @@ final class BallDetector {
         default:
             return width / height
         }
+    }
+}
+
+// MARK: - Snapshot
+
+extension BallDetector {
+    /// Where the search stands. The model and the settings aren't here: the detector it
+    /// is restored into is built with them, and blocked areas are applied as usual.
+    struct State: Codable, Equatable {
+        var consecutiveMisses: Int
+        var stats: BallDetectionStats
+        var lastMode: Mode
+    }
+
+    var snapshotState: State {
+        State(consecutiveMisses: consecutiveMisses, stats: stats, lastMode: lastMode)
+    }
+
+    func restore(from snapshot: State) {
+        consecutiveMisses = snapshot.consecutiveMisses
+        stats = snapshot.stats
+        lastMode = snapshot.lastMode
     }
 }
