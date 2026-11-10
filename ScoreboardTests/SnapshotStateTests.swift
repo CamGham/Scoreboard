@@ -272,3 +272,76 @@ func incompatibleSnapshotIsReported() throws {
         return
     }
 }
+
+// MARK: - The summary beside it
+
+@MainActor
+@Test("Saving writes a summary of the pass beside it, and deleting removes both")
+func snapshotSummaryFollowsTheSnapshot() throws {
+    let url = temporarySnapshotURL()
+    let summaryURL = url.deletingPathExtension().appendingPathExtension("json")
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: summaryURL)
+    }
+    let store = SnapshotStore(url: url)
+    #expect(store.loadSummary() == nil)
+
+    var snapshot = emptySnapshot(for: "video-3")
+    snapshot.capturedAt = Date(timeIntervalSince1970: 1_690_000_000)
+    try store.save(snapshot)
+
+    let summary = try #require(store.loadSummary())
+    #expect(summary == InProgressSummary(snapshot))
+    #expect(summary.assetIdentifier == "video-3")
+    #expect(summary.capturedAt == snapshot.capturedAt)
+    #expect(summary.canContinue)
+
+    // A summary on its own describes nothing.
+    try FileManager.default.removeItem(at: url)
+    #expect(store.loadSummary() == nil)
+
+    try store.save(snapshot)
+    store.delete()
+    #expect(!FileManager.default.fileExists(atPath: summaryURL.path(percentEncoded: false)))
+}
+
+@MainActor
+@Test("The pass in progress reads as how much is done and how much is left")
+func inProgressWording() {
+    var summary = InProgressSummary(emptySnapshot(for: "video-4"))
+    summary.analysedSeconds = 83
+    summary.clipSeconds = 250
+
+    #expect(summary.percentText == "33% analysed")
+    #expect(summary.timeText == "1:23 of 4:10 · 2:47 left")
+
+    // A clip whose length wasn't known can only say how far it got.
+    summary.clipSeconds = 0
+    #expect(summary.percentText == nil)
+    #expect(summary.timeText == "1:23 analysed")
+    #expect(summary.fraction == 0)
+
+    // Another version's pass is shown, but can't be carried on.
+    summary.formatVersion = AnalysisSnapshot.currentFormatVersion + 1
+    #expect(!summary.canContinue)
+}
+
+@MainActor
+@Test("The summary counts shots the way the dashboard does")
+func inProgressSummaryCountsShots() throws {
+    let tracker = RecordedTracker()
+    tracker.feed(madeShot()[...], firstFrame: 1)
+    tracker.tracker.endOfStream(atFrame: 40)
+
+    let game = GameState()
+    for event in tracker.events { game.handle(event) }
+
+    var snapshot = emptySnapshot(for: "video-5")
+    snapshot.game = game.snapshotState
+    let summary = InProgressSummary(snapshot)
+
+    #expect(summary.attempts == game.stats.attempts)
+    #expect(summary.makes == game.stats.makes)
+    #expect(summary.makes == 1)
+}

@@ -19,6 +19,16 @@ struct SavedGamesView<Header: View>: View {
 
     @State private var summaries: [SavedGameSummary] = []
 
+    /// The analysis saved to finish later, if there is one — see `InProgressRow`.
+    private let snapshotStore = SnapshotStore()
+    @State private var inProgress: InProgressSummary?
+
+    /// The saved pass being carried on, while its analysis screen is up.
+    @State private var continuing: AnalysisSnapshot?
+
+    /// Asked when the saved pass is from a version that can't carry it on.
+    @State private var showCannotContinue = false
+
     @AppStorage("savedGamesSort") private var sort = SavedGameSort.analysed
 
     /// Asks for a game to be brought into view — after an analysis is saved.
@@ -34,6 +44,11 @@ struct SavedGamesView<Header: View>: View {
                     guard let game else { return }
                     show(game, with: proxy)
                 }
+                .onChange(of: navigation?.showsInProgress, initial: true) { _, shows in
+                    guard shows == true else { return }
+                    navigation?.showsInProgress = false
+                    show(InProgressRow.rowID, with: proxy)
+                }
         }
     }
 
@@ -41,6 +56,16 @@ struct SavedGamesView<Header: View>: View {
         List {
             header
                 .libraryRow()
+
+            if let inProgress {
+                InProgressRow(
+                    summary: inProgress,
+                    isHighlighted: highlighted == InProgressRow.rowID,
+                    onOpen: { openInProgress() },
+                    onDelete: { deleteInProgress() }
+                )
+                .id(InProgressRow.rowID)
+            }
 
             if summaries.isEmpty {
                 ContentUnavailableView {
@@ -82,6 +107,20 @@ struct SavedGamesView<Header: View>: View {
         // Re-read when coming back from a detail view, since corrections there change
         // the totals shown here.
         .onAppear { reload() }
+        .fullScreenCover(
+            isPresented: Binding(get: { continuing != nil }, set: { if !$0 { continuing = nil } }),
+            onDismiss: { reload() }
+        ) {
+            if let continuing {
+                VideoView(continuing: continuing)
+            }
+        }
+        .alert("Can't carry on this analysis", isPresented: $showCannotContinue) {
+            Button("Delete It", role: .destructive) { deleteInProgress() }
+            Button("Keep It", role: .cancel) { }
+        } message: {
+            Text("It was saved by an earlier version of Scoreboard, which this version can't pick up from.")
+        }
     }
 
     private var sortControl: some View {
@@ -106,6 +145,24 @@ struct SavedGamesView<Header: View>: View {
 
     private func reload() {
         summaries = store.summaries()
+        inProgress = snapshotStore.loadSummary()
+    }
+
+    /// Carry on the analysis in progress, or say why it can't be.
+    private func openInProgress() {
+        switch snapshotStore.load() {
+        case .ready(let snapshot):
+            continuing = snapshot
+        case .incompatible:
+            showCannotContinue = true
+        case .none:
+            withAnimation { reload() }
+        }
+    }
+
+    private func deleteInProgress() {
+        snapshotStore.delete()
+        withAnimation { reload() }
     }
 
     /// Reload — the game may be new, or its totals changed — then scroll its row to the
@@ -179,6 +236,100 @@ private extension View {
         } message: {
             Text("Every run and any corrections you've made will be removed. The video stays in your library.")
         }
+    }
+}
+
+/// The analysis saved to finish later: how far it got, what it has found so far. Tapping
+/// carries it on; it can be deleted like a saved game.
+private struct InProgressRow: View {
+    /// For bringing the row into view — saved games use their asset identifiers.
+    static let rowID = "analysis-in-progress"
+
+    let summary: InProgressSummary
+
+    /// Flashed after being brought into view.
+    var isHighlighted = false
+
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+
+    @State private var isConfirmingDelete = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 14) {
+                VStack(spacing: 0) {
+                    Text(summary.fraction, format: .percent.precision(.fractionLength(0)))
+                        .font(.title3.bold().monospacedDigit())
+                    Text("done")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 52)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Analysis in progress")
+                        .font(.headline)
+
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if summary.canContinue {
+                        ProgressView(value: summary.fraction)
+
+                        ShotTag(text: "\(summary.makes) of \(summary.attempts) so far")
+                    } else {
+                        ShotTag(text: "Can't be continued", tint: .red)
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: summary.canContinue ? "play.circle.fill" : "exclamationmark.circle")
+                    .font(.title2)
+                    .foregroundStyle(summary.canContinue ? Color.accentColor : .secondary)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            Color.accentColor
+                .opacity(isHighlighted ? 0.25 : 0)
+                .animation(isHighlighted ? .easeIn(duration: 0.2) : .easeOut(duration: 0.6), value: isHighlighted)
+        )
+        // Not `role: .destructive`, for the same reason as a saved game's row.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                isConfirmingDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(.red)
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                isConfirmingDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .confirmationDialog(
+            "Delete the analysis in progress?",
+            isPresented: $isConfirmingDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Analysis", role: .destructive, action: onDelete)
+        } message: {
+            Text("What it has found so far will be lost. The video stays in your library.")
+        }
+    }
+
+    /// When the video was recorded, if known, then how far through it is.
+    private var detail: String {
+        guard let recorded = summary.capturedAt else { return summary.timeText }
+        return "Recorded \(recorded.formatted(.dateTime.day().month())) · \(summary.timeText)"
     }
 }
 

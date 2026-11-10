@@ -20,10 +20,22 @@ final class AppNavigation {
     /// What the dashboard has pushed: the saved games opened from its list.
     var dashboardPath: [SavedGameRoute] = []
 
+    /// Whether the dashboard should bring the analysis in progress into view. Cleared
+    /// once it has been shown.
+    var showsInProgress = false
+
     /// Switch to the dashboard, back to its list, and bring a saved game's row into view.
     func showSavedGame(_ assetIdentifier: String) {
         dashboardPath = []
         gameToShow = assetIdentifier
+        tab = .scoreboard
+    }
+
+    /// Switch to the dashboard, back to its list, and bring the analysis in progress into
+    /// view — after one is saved to finish later.
+    func showInProgressAnalysis() {
+        dashboardPath = []
+        showsInProgress = true
         tab = .scoreboard
     }
 }

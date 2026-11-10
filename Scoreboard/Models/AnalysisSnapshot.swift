@@ -53,6 +53,10 @@ struct AnalysisSnapshot: Codable, Equatable {
 
     var savedAt: Date
 
+    /// When the video was recorded, for showing the pass in progress the way saved games
+    /// are shown. Nil when Photos didn't say.
+    var capturedAt: Date?
+
     /// The settings the pass started with. Carried on with these, so both halves of it
     /// are judged alike even if the defaults have changed since.
     var configuration: RunConfiguration
@@ -79,6 +83,7 @@ struct AnalysisSnapshot: Codable, Equatable {
         from processor: VideoProcessor,
         assetIdentifier: String,
         runID: UUID?,
+        capturedAt: Date? = nil,
         clipSeconds: Double
     ) async -> AnalysisSnapshot? {
         let tracker = processor.tracker
@@ -94,6 +99,7 @@ struct AnalysisSnapshot: Codable, Equatable {
             assetIdentifier: assetIdentifier,
             runID: runID,
             savedAt: Date(),
+            capturedAt: capturedAt,
             configuration: tracker.configuration,
             resumePoint: ResumePoint(time: time, frames: processor.frames),
             analysedSeconds: time.seconds,
