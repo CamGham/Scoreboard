@@ -95,3 +95,32 @@ func kalmanUsesItsConfig() {
     // new detection further.
     #expect(following.box.midX > standard.box.midX)
 }
+
+@Test("A tracker built from saved settings runs with them, and reports them as its own")
+func trackerBuiltFromConfiguration() {
+    var configuration = RunConfiguration()
+    configuration.shotDetector.fitWindow = 20
+    // Values a Float holds exactly: the detector keeps them as Float, and 0.3 would come
+    // back as 0.30000001.
+    configuration.fullFrameBallConfidence = 0.5
+    configuration.croppedBallConfidence = 0.375
+    configuration.modelIdentifier = ObjectDetector.modelIdentifier
+    configuration.players.detectionInterval = 4
+    configuration.players.kalman.velocityNoiseWeight = 1.0 / 80
+    configuration.possession.sightingsToSwitch = 5
+    configuration.shooter.takeOffWindowFrames = 20
+    configuration.identity.clearMargin = 0.2
+    configuration.appearanceSampler.darkLuma = 30
+    configuration.vision.rimSampleInterval = 45
+    configuration.rimPreflight.sampleCount = 20
+
+    let tracker = VisionTracker(configuration: configuration)
+    tracker.setFormat(.oneOnOne)
+
+    // No rim yet, so it reports none — the one part that comes from the pass, not the
+    // settings.
+    #expect(tracker.currentConfiguration() == configuration)
+    #expect(tracker.playerTracker.config == configuration.players)
+    #expect(tracker.possessionTracker.config == configuration.possession)
+    #expect(tracker.identityTracker?.config == configuration.identity)
+}

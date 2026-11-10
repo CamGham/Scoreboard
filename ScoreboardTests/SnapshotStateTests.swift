@@ -7,6 +7,7 @@
 
 import Testing
 import Foundation
+import AVFoundation
 @testable import Scoreboard
 
 // MARK: - Fixtures
@@ -193,4 +194,81 @@ func visionTrackerRoundTrip() async throws {
 
     #expect(await restored.awaitVisionModel() != nil)
     #expect(restored.snapshotState == original.snapshotState)
+}
+
+// MARK: - Saving the snapshot
+
+/// A snapshot of a tracker that has seen nothing — enough to save and load.
+@MainActor
+private func emptySnapshot(for assetIdentifier: String) -> AnalysisSnapshot {
+    let tracker = VisionTracker()
+    return AnalysisSnapshot(
+        assetIdentifier: assetIdentifier,
+        runID: UUID(),
+        savedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        configuration: RunConfiguration(),
+        resumePoint: AnalysisSnapshot.ResumePoint(time: CMTime(value: 1_234, timescale: 600), frames: 61),
+        analysedSeconds: 2.06,
+        clipSeconds: 10,
+        tracker: tracker.snapshotState,
+        game: tracker.gameState.snapshotState
+    )
+}
+
+private func temporarySnapshotURL() -> URL {
+    FileManager.default.temporaryDirectory.appending(path: "snapshot-\(UUID().uuidString).snapshot")
+}
+
+@MainActor
+@Test("A saved snapshot loads back as it was, and is gone once deleted")
+func snapshotStoreRoundTrip() throws {
+    let url = temporarySnapshotURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let store = SnapshotStore(url: url)
+
+    guard case .none = store.load() else {
+        Issue.record("nothing saved should load as nothing")
+        return
+    }
+
+    let snapshot = emptySnapshot(for: "video-1")
+    try store.save(snapshot)
+
+    guard case .ready(let loaded) = store.load() else {
+        Issue.record("a snapshot just saved should be ready to carry on")
+        return
+    }
+    #expect(loaded == snapshot)
+    #expect(loaded.resumePoint.time == CMTime(value: 1_234, timescale: 600))
+
+    store.delete()
+    guard case .none = store.load() else {
+        Issue.record("a deleted snapshot should be gone")
+        return
+    }
+}
+
+@MainActor
+@Test("A snapshot from another version can't be carried on, but still says which video it was")
+func incompatibleSnapshotIsReported() throws {
+    let url = temporarySnapshotURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let store = SnapshotStore(url: url)
+
+    var snapshot = emptySnapshot(for: "video-2")
+    snapshot.formatVersion = AnalysisSnapshot.currentFormatVersion + 1
+    try store.save(snapshot)
+
+    guard case .incompatible(let assetIdentifier) = store.load() else {
+        Issue.record("another version's snapshot should be reported as incompatible")
+        return
+    }
+    #expect(assetIdentifier == "video-2")
+
+    // Something that isn't a snapshot at all.
+    try Data("not a snapshot".utf8).write(to: url)
+    guard case .incompatible(nil) = store.load() else {
+        Issue.record("an unreadable file should be reported as incompatible")
+        return
+    }
 }

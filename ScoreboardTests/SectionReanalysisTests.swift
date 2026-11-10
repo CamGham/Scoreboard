@@ -470,3 +470,65 @@ func pausingDoesNotFinishTheWindow() async throws {
     #expect(processor.isComplete)
     #expect(completion.isFinished)
 }
+
+// MARK: - Carrying on a saved pass
+
+@MainActor
+@Test("A pass saved part-way and carried on from disk analyses every frame once, with its settings and run")
+func savedPassCarriesOnFromDisk() async throws {
+    let url = try await makeTestClip(seconds: 2)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let asset = AVURLAsset(url: url)
+
+    var configuration = RunConfiguration()
+    configuration.players.detectionInterval = 4
+
+    // Straight through, for comparison.
+    let straight = try await VideoProcessor.create(videoAsset: asset, producesPreviewFrames: false, configuration: configuration)
+    var straightTimes: [Double] = []
+    straight.onFrameProcessed = { if let time = $0 { straightTimes.append(time) } }
+    straight.resume()
+    await straight.play()
+
+    // The first part, held the way leaving the app holds it.
+    let first = try await VideoProcessor.create(videoAsset: asset, producesPreviewFrames: false, configuration: configuration)
+    var times: [Double] = []
+    first.onFrameProcessed = { time in
+        if let time { times.append(time) }
+        if times.count == 23 { first.pause(.systemTriggered) }
+    }
+    first.resume()
+    await first.play()
+
+    let runID = UUID()
+    let snapshot = try #require(
+        await AnalysisSnapshot.capture(from: first, assetIdentifier: "clip", runID: runID, clipSeconds: 2)
+    )
+
+    let storeURL = FileManager.default.temporaryDirectory.appending(path: "carry-on-\(UUID().uuidString).snapshot")
+    defer { try? FileManager.default.removeItem(at: storeURL) }
+    let store = SnapshotStore(url: storeURL)
+    try store.save(snapshot)
+
+    guard case .ready(let loaded) = store.load() else {
+        Issue.record("the saved snapshot should load")
+        return
+    }
+    #expect(loaded.runID == runID)
+
+    // Carried on in a new processor, as after the app was ended — with a poster to show.
+    let second = try await loaded.makeProcessor(asset: asset)
+    #expect(second.currentFrame != nil)
+    #expect(second.tracker.currentConfiguration() == first.tracker.currentConfiguration())
+
+    second.producesPreviewFrames = false
+    second.onFrameProcessed = { if let time = $0 { times.append(time) } }
+    second.resume()
+    await second.play()
+
+    #expect(straightTimes.count > 23)
+    #expect(times == straightTimes)
+    #expect(second.isComplete)
+    #expect(second.frames == straight.frames)
+    #expect(second.tracker.snapshotState.frameCounter == straight.tracker.snapshotState.frameCounter)
+}

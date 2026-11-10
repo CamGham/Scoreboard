@@ -82,6 +82,10 @@ final class GameState {
     /// Frame of the most recent made basket, for a score flash in the UI.
     private(set) var lastMadeFrame: Int?
 
+    /// Shot events handled so far — see `VisionTracker.eventsSent`, which a snapshot
+    /// waits for this to catch up with. Not drawn, so not observed.
+    @ObservationIgnored private(set) var eventsHandled = 0
+
     /// Who held the ball, frame by frame, for drawing in replay.
     ///
     /// Handed over once — when an analysis finishes, or a saved run is loaded — rather
@@ -133,6 +137,8 @@ final class GameState {
     }
 
     func handle(_ event: ShotEvent) {
+        eventsHandled += 1
+
         switch event {
         case .attemptStarted, .rimContact:
             break

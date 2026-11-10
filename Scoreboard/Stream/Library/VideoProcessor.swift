@@ -117,7 +117,7 @@ class VideoProcessor {
     var orientation: CGImagePropertyOrientation
     var trackSize: CGSize
     
-    var tracker = VisionTracker()
+    var tracker: VisionTracker
 
     /// Frames the track claims to run at. Only an approximation on variable-frame-rate
     /// footage, so it is used for estimates — never for timing.
@@ -157,8 +157,10 @@ class VideoProcessor {
                  orientation: CGImagePropertyOrientation,
                  trackSize: CGSize,
                  nominalFrameRate: Float,
-                 producesPreviewFrames: Bool) {
+                 producesPreviewFrames: Bool,
+                 configuration: RunConfiguration) {
         print("DEBUG: PROCESSER CREATED")
+            self.tracker = VisionTracker(configuration: configuration)
             self.videoAsset = videoAsset
             self.videoTrack = videoTrack
             self.videoReader = videoReader
@@ -192,10 +194,16 @@ class VideoProcessor {
     ///     marked section rather than the whole video.
     ///   - producesPreviewFrames: false skips decoding each frame to an image, for a pass
     ///     nobody is watching.
+    ///   - configuration: settings for every part of the tracker.
+    ///   - resumingAfter: the last frame a saved pass analysed. Reading starts on the frame
+    ///     after it, as if the pass had never stopped. For the whole clip only, not a
+    ///     section.
     static func create(
         videoAsset: AVAsset,
         timeRange: CMTimeRange? = nil,
-        producesPreviewFrames: Bool = true
+        producesPreviewFrames: Bool = true,
+        configuration: RunConfiguration = RunConfiguration(),
+        resumingAfter resumeTime: CMTime? = nil
     ) async throws -> VideoProcessor {
         let _ = try await videoAsset.load(.isPlayable)
         
@@ -220,13 +228,22 @@ class VideoProcessor {
         }
         videoReader.add(videoAssetReaderOutput)
 
-        // Must be set before reading starts.
-        if let timeRange { videoReader.timeRange = timeRange }
+        // Must be set before reading starts. A resumed pass starts at the frame it last
+        // analysed; `prepareToResume(after:)` skips that one.
+        if let resumeTime {
+            videoReader.timeRange = CMTimeRange(start: resumeTime, duration: .positiveInfinity)
+        } else if let timeRange {
+            videoReader.timeRange = timeRange
+        }
 
         videoReader.startReading()
         
         var firstFrame: Image? = nil
-        if producesPreviewFrames,
+        if producesPreviewFrames, let resumeTime {
+            // Not from the reader: a frame taken from it for the poster is never analysed,
+            // and on a resumed pass that would leave a gap right where it picks up.
+            firstFrame = await Self.still(of: videoAsset, at: resumeTime)
+        } else if producesPreviewFrames,
            let sampleBuffer = videoAssetReaderOutput.copyNextSampleBuffer(),
            let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
 
@@ -234,7 +251,7 @@ class VideoProcessor {
             firstFrame = ciImage.oriented(orientation).image
         }
         
-        return VideoProcessor(
+        let processor = VideoProcessor(
             videoAsset: videoAsset,
             videoTrack: videoTrack,
             videoReader: videoReader,
@@ -245,9 +262,39 @@ class VideoProcessor {
             orientation: orientation,
             trackSize: trackSize,
             nominalFrameRate: frameRate,
-            producesPreviewFrames: producesPreviewFrames
+            producesPreviewFrames: producesPreviewFrames,
+            configuration: configuration
         )
+        if let resumeTime { processor.prepareToResume(after: resumeTime) }
+        return processor
     }
+
+    /// One frame of `asset` at `time`, turned the right way up, for a poster.
+    private static func still(of asset: AVAsset, at time: CMTime) async -> Image? {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        guard let cgImage = try? await generator.image(at: time).image else { return nil }
+        return Image(decorative: cgImage, scale: 1)
+    }
+
+    /// Carry on a saved pass: the frame at `time` was the last one analysed, so it and
+    /// anything before it the reader hands back is skipped — the same rule as a rebuilt
+    /// reader.
+    private func prepareToResume(after time: CMTime) {
+        lastPresentationTime = time
+        hasReadFrame = true
+        skipThrough = time
+        currentFrameTime = time.seconds
+        analysedTime = time.seconds
+    }
+
+    /// Exact time of the last frame analysed, for saving where a pass got to. Nil before
+    /// any frame, or when that frame had no timestamp.
+    var lastFrameTime: CMTime? { lastPresentationTime }
+
+    /// Whether a frame loop is running right now. Pausing lets the frame in hand finish,
+    /// so this can stay true for a moment after `pause(_:)`.
+    var isLoopRunning: Bool { loopLock.withLock { isLooping } }
 
     /// Frames as Vision wants them: biplanar YCbCr, which the appearance sampler also reads.
     /// Shared by the first reader and any rebuilt one, so a rebuilt pass sees the same

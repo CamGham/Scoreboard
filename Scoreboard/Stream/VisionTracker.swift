@@ -42,20 +42,18 @@ class VisionTracker {
 
     /// Shot detection engine. Runs on the frame-processing thread; results are handed
     /// to `gameState` on the main actor.
-    let shotTracker = ShotTracker()
+    let shotTracker: ShotTracker
 
     /// Finds the ball by re-detecting inside a moving crop each frame — see
     /// `BallDetector`.
     private(set) var ballDetector: BallDetector?
 
     /// Follows the players between detection passes — see `PlayerTracker`.
-    @ObservationIgnored private(set) var playerTracker = PlayerTracker()
+    @ObservationIgnored private(set) var playerTracker: PlayerTracker
 
     /// Detection numbers gathered on every frame with full-frame results. Read through
     /// `playerStats`, which adds the tracker's lifetimes.
-    @ObservationIgnored private var playerDetectionStats = PlayerDetectionStats(
-        passInterval: PlayerTracker.Config().detectionInterval
-    )
+    @ObservationIgnored private var playerDetectionStats: PlayerDetectionStats
     @ObservationIgnored private var previousPlayerSample: PlayerSample?
 
     /// Where every player track was on each frame with a detection pass, for drawing them
@@ -63,7 +61,7 @@ class VisionTracker {
     @ObservationIgnored private(set) var positions = PlayerPositionRecord()
 
     /// Decides who has the ball on every frame — see `PossessionTracker`.
-    @ObservationIgnored private(set) var possessionTracker = PossessionTracker()
+    @ObservationIgnored private(set) var possessionTracker: PossessionTracker
 
     /// Puts the player tracks onto the people on court — see `IdentityTracker`. Nil until
     /// a format is picked, which leaves tracks as they were.
@@ -106,14 +104,34 @@ class VisionTracker {
     /// exists to take it — the same reason as `pendingExclusionZones`.
     @ObservationIgnored private var pendingBallDetectorState: BallDetector.State?
 
-    init(config: Config = Config(), appearanceSampler: AppearanceSampler = AppearanceSampler()) {
-        self.config = config
-        self.appearanceSampler = appearanceSampler
+    /// Every part's settings, as given. Kept for the parts built later — the ball detector
+    /// once the model loads, identities once a format is picked — and for the shooter
+    /// locator, which is asked fresh on every attempt.
+    @ObservationIgnored let configuration: RunConfiguration
+
+    /// Shot events handed to `gameState` so far. They reach it by a hop onto the main
+    /// actor, so a snapshot waits for `gameState` to have handled this many — otherwise
+    /// it would miss a shot the shot tracker already counts as reported. Written on the
+    /// frame-processing thread.
+    @ObservationIgnored private(set) var eventsSent = 0
+
+    /// - Parameter configuration: settings for every part. The defaults are today's
+    ///   tuning; a pass carried on from a snapshot is built with the settings it started
+    ///   with, so both halves of it are judged alike.
+    init(configuration: RunConfiguration = RunConfiguration()) {
+        self.configuration = configuration
+        self.config = configuration.vision
+        self.appearanceSampler = AppearanceSampler(config: configuration.appearanceSampler)
+        self.shotTracker = ShotTracker(config: configuration.shotDetector)
+        self.playerTracker = PlayerTracker(config: configuration.players)
+        self.possessionTracker = PossessionTracker(config: configuration.possession)
+        self.playerDetectionStats = PlayerDetectionStats(passInterval: configuration.players.detectionInterval)
         print("DEBUG: TRACKER CREATED")
 
         setOverlayUpdates(true)
 
-        shotTracker.onEvent = { [gameState] event in
+        shotTracker.onEvent = { [weak self, gameState] event in
+            self?.eventsSent += 1
             Task { @MainActor in
                 gameState.handle(event)
             }
@@ -123,13 +141,17 @@ class VisionTracker {
         // where the possession record is written — so it is read on the same thread.
         shotTracker.locateShooter = { [weak self] attempt in
             guard let self, let openedAt = attempt.trajectory.last?.frameID else { return nil }
-            return ShooterLocator.locate(in: self.possessionTracker.record, openedAt: openedAt)
+            return ShooterLocator.locate(
+                in: self.possessionTracker.record,
+                openedAt: openedAt,
+                config: self.configuration.shooter
+            )
         }
 
         Task {
             await visionModel = try ObjectDetector.createDetector()
             if let visionModel {
-                ballDetector = BallDetector(model: visionModel)
+                ballDetector = BallDetector(model: visionModel, settings: ballSettings)
                 ballDetector?.exclusionZones = pendingExclusionZones
                 if let pendingBallDetectorState {
                     ballDetector?.restore(from: pendingBallDetectorState)
@@ -297,7 +319,7 @@ class VisionTracker {
     /// Set how many people are on court, which turns on identities. Must be called before
     /// the first frame: a player numbered partway through would be numbered wrongly.
     func setFormat(_ format: GameFormat?) {
-        identityTracker = format.map { IdentityTracker(format: $0) }
+        identityTracker = format.map { IdentityTracker(format: $0, config: configuration.identity) }
     }
 
     /// Detection and tracking numbers for the run so far, for saving with it.
@@ -443,9 +465,11 @@ class VisionTracker {
     /// Assembled from the live objects rather than from defaults, so the record reflects
     /// what actually ran.
     func currentConfiguration() -> RunConfiguration {
-        let ballSettings = ballDetector?.settings ?? BallDetector.Config()
+        let ballSettings = ballDetector?.settings ?? self.ballSettings
         return RunConfiguration(
-            shotDetector: ShotDetectorConfig(),
+            // Never changes once the shot tracker is built, so what it was given is what
+            // it uses.
+            shotDetector: configuration.shotDetector,
             ballROI: ballSettings.roi,
             fullFrameBallConfidence: Double(ballSettings.fullFrameConfidence),
             croppedBallConfidence: Double(ballSettings.croppedConfidence),
@@ -456,11 +480,20 @@ class VisionTracker {
             }(),
             players: playerTracker.config,
             possession: possessionTracker.config,
-            shooter: ShooterLocator.Config(),
-            identity: identityTracker?.config ?? IdentityTracker.Config(),
+            shooter: configuration.shooter,
+            identity: identityTracker?.config ?? configuration.identity,
             appearanceSampler: appearanceSampler.config,
             vision: config,
-            rimPreflight: RimPreflight.Config()
+            rimPreflight: configuration.rimPreflight
+        )
+    }
+
+    /// The ball detector's settings, as the configuration gives them.
+    private var ballSettings: BallDetector.Config {
+        BallDetector.Config(
+            roi: configuration.ballROI,
+            fullFrameConfidence: Float(configuration.fullFrameBallConfidence),
+            croppedConfidence: Float(configuration.croppedBallConfidence)
         )
     }
 
@@ -586,7 +619,7 @@ extension VisionTracker {
         identityTracker = snapshot.identity.map { state in
             var tracker = IdentityTracker(
                 format: state.record.format,
-                config: identityTracker?.config ?? IdentityTracker.Config()
+                config: configuration.identity
             )
             tracker.restore(from: state)
             return tracker

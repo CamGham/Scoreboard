@@ -47,6 +47,14 @@ struct VideoView: View {
 
     /// Saved analysis and corrections for this video.
     @State var store = ShotStore()
+
+    /// Where this pass is saved part-way, if iOS ends the app while it's away — see
+    /// `AnalysisSnapshot`.
+    @State var snapshotStore = SnapshotStore()
+
+    /// Whether this pass has saved a snapshot that is still on disk, so resuming or
+    /// finishing knows there is one to remove.
+    @State var hasSavedSnapshot = false
     @State var truth: GroundTruthDocument?
 
     /// Identity of the analysis pass in progress, so repeated saves update one run.
@@ -367,6 +375,10 @@ struct VideoView: View {
             case .resume: resume(videoProcessor)
             case .none: break
             }
+
+            // The app can be suspended from here, and ended while suspended without a
+            // word, so this is the last moment to keep what the pass has learnt.
+            if phase == .background { saveSnapshot(of: videoProcessor) }
         }
         .onDisappear { saveRun() }
     }
@@ -515,6 +527,9 @@ struct VideoView: View {
     }
 
     func resume(_ videoProcessor: VideoProcessor) {
+        // Carrying on from memory: what was saved for a restart is now behind.
+        discardSnapshot()
+
         // The clock starts at the first resume and keeps running across pauses, so the
         // rate shown is the rate of the whole pass rather than of the last burst.
         if analysisStartedAt == nil { analysisStartedAt = Date() }
@@ -526,6 +541,43 @@ struct VideoView: View {
         }
     }
 
+
+    /// Save what the pass has learnt so far, in case iOS ends the app before it comes
+    /// back. Only for a pass that has started and isn't finished or being wrapped up.
+    ///
+    /// Gathered on the main thread once the frame loop has stopped, then compressed and
+    /// written off it — inside a background task, since the app is on its way out.
+    func saveSnapshot(of videoProcessor: VideoProcessor) {
+        guard hasStartedAnalysis, finishingStep == nil, !videoProcessor.isComplete,
+              let assetIdentifier else { return }
+
+        let window = BackgroundTaskWindow(name: "Save analysis in progress")
+        let snapshotStore = snapshotStore
+        Task {
+            defer { window.end() }
+
+            guard let snapshot = await AnalysisSnapshot.capture(
+                from: videoProcessor,
+                assetIdentifier: assetIdentifier,
+                runID: currentRunID,
+                clipSeconds: clipDuration
+            ) else { return }
+
+            let saved = await Task.detached(priority: .userInitiated) {
+                (try? snapshotStore.save(snapshot)) != nil
+            }.value
+            if saved { hasSavedSnapshot = true }
+        }
+    }
+
+    /// Remove the saved snapshot, when this pass made one.
+    func discardSnapshot() {
+        guard hasSavedSnapshot else { return }
+        hasSavedSnapshot = false
+
+        let snapshotStore = snapshotStore
+        Task.detached(priority: .utility) { snapshotStore.delete() }
+    }
 
     var existingAnalysisMessage: String {
         let count = existingRuns.count
@@ -561,6 +613,9 @@ struct VideoView: View {
             next()
             return
         }
+
+        // Finishing either way, so there is nothing left to carry on.
+        discardSnapshot()
 
         finishingStep = "Re-checking who's who…"
         Task {
