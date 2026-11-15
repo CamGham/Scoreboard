@@ -36,6 +36,13 @@ enum ObjectError: Error {
     case creation
 }
 
+/// Class labels the model emits, as they appear in its results.
+enum ObjectType: String {
+    case ball = "Basketball"
+    case player = "Player"
+    case rim = "Rim"
+}
+
 
 class ThresholdProvider: MLFeatureProvider {
     /// The actual values to provide as input

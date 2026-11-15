@@ -59,15 +59,14 @@ struct BallDetectionStats: Codable, Equatable {
 
 /// Finds the ball by detecting inside a moving crop rather than tracking it visually.
 ///
-/// The ball used to ride the same `VNTrackObjectRequest` path as the players. That is a
-/// poor fit: correlation tracking has no motion model, and a small motion-blurred ball
-/// is its worst case — the pipeline carried explicit workarounds for tracks latching
-/// onto background. A ballistic fit is a far better predictor, so the ball is now
-/// predicted and re-detected every frame instead of tracked, which also hands a tracking
-/// slot back to the players.
+/// The ball used to be followed with `VNTrackObjectRequest`. That is a poor fit:
+/// correlation tracking has no motion model, and a small motion-blurred ball is its worst
+/// case — the pipeline carried explicit workarounds for tracks latching onto background.
+/// A ballistic fit is a far better predictor, so the ball is predicted and re-detected
+/// every frame instead. (The players later went the same way — see `PlayerTracker`.)
 final class BallDetector {
 
-    enum Mode: Equatable {
+    enum Mode: Codable, Equatable {
         /// No usable prediction — sweep the whole frame.
         case searching
         /// Detect inside a crop around the predicted position.
@@ -76,26 +75,36 @@ final class BallDetector {
 
     private let model: VNCoreMLModel
 
-    /// Crop geometry in use. Recorded with the run, because it changes what gets found.
-    let config: BallROIPredictor.Config
+    struct Config: Codable, Equatable {
+        /// Crop geometry. Recorded with the run, because it changes what gets found.
+        var roi = BallROIPredictor.Config()
 
-    /// Confidence floor when sweeping the full frame.
-    let fullFrameConfidence: Float = 0.45
+        /// Confidence floor when sweeping the full frame.
+        var fullFrameConfidence: Float = 0.45
 
-    /// Confidence floor inside the crop.
-    ///
-    /// Lower on purpose. Location is already strongly constrained by the prediction, so
-    /// a middling box in the right place is far more likely to be the ball than the same
-    /// score anywhere in a full frame.
-    let croppedConfidence: Float = 0.25
+        /// Confidence floor inside the crop.
+        ///
+        /// Lower on purpose. Location is already strongly constrained by the prediction,
+        /// so a middling box in the right place is far more likely to be the ball than the
+        /// same score anywhere in a full frame.
+        var croppedConfidence: Float = 0.25
+    }
+
+    let settings: Config
+
+    /// Crop geometry in use.
+    var config: BallROIPredictor.Config { settings.roi }
+
+    var fullFrameConfidence: Float { settings.fullFrameConfidence }
+    var croppedConfidence: Float { settings.croppedConfidence }
 
     private(set) var consecutiveMisses = 0
     private(set) var stats = BallDetectionStats()
     private(set) var lastMode: Mode = .searching
 
-    init(model: VNCoreMLModel, config: BallROIPredictor.Config = BallROIPredictor.Config()) {
+    init(model: VNCoreMLModel, settings: Config = Config()) {
         self.model = model
-        self.config = config
+        self.settings = settings
     }
 
     /// Parts of the frame whose sightings are thrown away. See `ExclusionZone` — and
@@ -111,17 +120,29 @@ final class BallDetector {
         lastMode = .searching
     }
 
-    /// Detect the ball for one frame.
+    /// One frame's ball detection, between building its request and reading the result.
     ///
-    /// - Returns: the ball's bounding box in *full-frame* Vision normalized space, with
-    ///   its confidence, or nil when nothing was found.
-    func detect(
+    /// Split in two so the request can share a handler with the frame's other requests:
+    /// a handler converts and scales the frame once for everything performed on it.
+    struct Pass {
+        let request: VNCoreMLRequest
+        /// The crop searched, or nil for a full-frame sweep. A sweep's results hold every
+        /// class, so the players and rim in them can be used too.
+        let roi: CGRect?
+        let predictedCentre: CGPoint?
+
+        var isSweep: Bool { roi == nil }
+    }
+
+    /// Build this frame's request: a crop around the predicted position, or a sweep.
+    /// Perform `request` on the frame, then hand the pass to `finish(_:)`.
+    func makePass(
         pixelBuffer: CVImageBuffer,
         orientation: CGImagePropertyOrientation,
         frameID: Int,
         history: [BallObservation],
         fit: MotionFit?
-    ) -> (boundingBox: CGRect, confidence: Float)? {
+    ) -> Pass {
 
         let aspect = orientedAspect(of: pixelBuffer, orientation: orientation)
         let mode = chooseMode(history: history, fit: fit, frameID: frameID, aspect: aspect)
@@ -143,12 +164,22 @@ final class BallDetector {
             roi = rect
         }
 
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-        try? handler.perform([request])
+        return Pass(request: request, roi: roi, predictedCentre: predictedCentre)
+    }
+
+    /// Read the ball out of a performed pass.
+    ///
+    /// - Returns: the ball's bounding box in *full-frame* Vision normalized space, with
+    ///   its confidence, or nil when nothing was found.
+    func finish(_ pass: Pass) -> (boundingBox: CGRect, confidence: Float)? {
+        let roi = pass.roi
+        let predictedCentre = pass.predictedCentre
+
+        let results = pass.request.results as? [VNRecognizedObjectObservation] ?? []
 
         let threshold = roi == nil ? fullFrameConfidence : croppedConfidence
 
-        let candidates = (request.results as? [VNRecognizedObjectObservation] ?? [])
+        let candidates = results
             .filter { $0.labels.first?.identifier == ObjectType.ball.rawValue }
             .filter { $0.confidence >= threshold }
             .filter { candidate in
@@ -256,5 +287,27 @@ final class BallDetector {
         default:
             return width / height
         }
+    }
+}
+
+// MARK: - Snapshot
+
+extension BallDetector {
+    /// Where the search stands. The model and the settings aren't here: the detector it
+    /// is restored into is built with them, and blocked areas are applied as usual.
+    struct State: Codable, Equatable {
+        var consecutiveMisses: Int
+        var stats: BallDetectionStats
+        var lastMode: Mode
+    }
+
+    var snapshotState: State {
+        State(consecutiveMisses: consecutiveMisses, stats: stats, lastMode: lastMode)
+    }
+
+    func restore(from snapshot: State) {
+        consecutiveMisses = snapshot.consecutiveMisses
+        stats = snapshot.stats
+        lastMode = snapshot.lastMode
     }
 }

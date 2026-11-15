@@ -150,10 +150,25 @@ final class ShotTracker {
         let events = detector.process(observation: observation, rim: rimTracker.geometry)
 
         for event in events {
-            onEvent?(event)
+            onEvent?(attachingShooter(to: event))
         }
 
         publishSnapshot(frameID: observation.frameID)
+    }
+
+    /// Asked who took an attempt as it opens. Set by the owner of the possession record;
+    /// nil leaves attempts without a shooter.
+    var locateShooter: ((ShotAttempt) -> ShooterSighting?)?
+
+    /// Look up the shooter of an attempt that has just opened, and keep it on the
+    /// detector's in-flight copy so it is still there when the attempt resolves.
+    private func attachingShooter(to event: ShotEvent) -> ShotEvent {
+        guard case .attemptStarted(var attempt) = event,
+              let shooter = locateShooter?(attempt) else { return event }
+
+        detector.attachShooter(shooter)
+        attempt.shooter = shooter
+        return .attemptStarted(attempt)
     }
 
     private func publishSnapshot(frameID: Int) {
@@ -173,5 +188,49 @@ final class ShotTracker {
         )
 
         onSnapshot?(snapshot)
+    }
+}
+
+// MARK: - Snapshot
+
+extension ShotTracker {
+    /// Everything that changes while a pass runs. Blocked areas and the callbacks aren't
+    /// here: they are set on the tracker it is restored into, as on any pass.
+    struct State: Codable, Equatable {
+        var detector: ShotDetector.State
+        var rim: RimTracker.State
+
+        /// Overlay pictures published so far. Carried on so the next one isn't numbered
+        /// as if it came first.
+        var sequence: Int
+
+        var currentFrameID: Int
+        var currentFrameTime: Double?
+
+        /// The last frame's ball, not yet handed to the detector — that only happens when
+        /// the next frame opens. Leaving it out would lose one sighting.
+        var pendingBall: BallObservation?
+    }
+
+    /// Read only between frames, while nothing is processing one.
+    var snapshotState: State {
+        State(
+            detector: detector.snapshotState,
+            rim: rimTracker.snapshotState,
+            sequence: sequence,
+            currentFrameID: currentFrameID,
+            currentFrameTime: currentFrameTime,
+            pendingBall: pendingBall
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off. Call before the first frame.
+    func restore(from snapshot: State) {
+        detector.restore(from: snapshot.detector)
+        rimTracker.restore(from: snapshot.rim)
+        sequence = snapshot.sequence
+        currentFrameID = snapshot.currentFrameID
+        currentFrameTime = snapshot.currentFrameTime
+        pendingBall = snapshot.pendingBall
     }
 }

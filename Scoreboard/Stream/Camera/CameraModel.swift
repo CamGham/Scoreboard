@@ -18,13 +18,7 @@ import LASwift
 final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     var previewSource: PreviewSource { captureService.previewSource }
     let captureService = CaptureService()
-    
-    // should look for new objects every 10 sec
-    let predictionTimer = Timer.publish(every: 10.0, on: .main, in: .common).autoconnect()
-    // can run observations every 0.05 sec to avoid over-processing
-    let observationTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
-    var dontCareAboutPerformance = true // override observation limit
-    
+
     var tracker = VisionTracker()
    
     override init() {
@@ -52,8 +46,10 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     
     func stop() async {
         await captureService.stop()
-        self.tracker.requests.removeAll()
-        self.tracker.rects.removeAll()
+        await MainActor.run {
+            tracker.playerTracks.removeAll()
+            tracker.ballHolderID = nil
+        }
     }
     
     
@@ -61,21 +57,11 @@ final class CameraModel: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let buf = sampleBuffer.imageBuffer else { return }
 
-        do {
+        PipelineSignpost.measure("Frame") {
             let orientation = exifOrientationFromDeviceOrientation()
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             tracker.beginFrame(timeSeconds: presentationTime.isValid ? presentationTime.seconds : nil)
-            tracker.detectBall(pixelBuffer: buf, orientation: orientation)
-
-            if tracker.shouldPredict {
-                tracker.shouldPredict = false
-                try tracker.makeObservations(pixelBuffer: buf, orientation: orientation)
-            } else if tracker.canObserve || dontCareAboutPerformance {
-                tracker.canObserve = false
-                try tracker.trackObservations(pixelBuffer: buf, orientation: orientation)
-            }
-        } catch {
-            print("Failed to make observations")
+            tracker.detect(pixelBuffer: buf, orientation: orientation)
         }
     }
     

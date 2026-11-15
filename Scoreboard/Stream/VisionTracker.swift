@@ -6,94 +6,173 @@
 //
 
 import Foundation
-import AVFoundation
-import CoreImage
 import Vision
-import Combine
-import UIKit
 import SwiftUI
-import LASwift
 
 @Observable
 class VisionTracker {
-    var shouldPredict = true
-    var canObserve = true
-    
+
     // Frame identification
     // Monotonic index of frames processed by VisionTracker, advanced by `beginFrame()`.
     // This is the single time base for the trajectory fit — it must count video frames,
     // not milliseconds, because the ballistic thresholds are expressed per frame.
     private(set) var frameCounter: Int = 0
-    
-    
+
     // Object detection
     var visionModel: VNCoreMLModel?
-    var requests = [VNRequest]()
-    var rects: [RectangleData] = []
     var hoop: [RectangleData] = []
-    
-    // Track objects over multiple frames
-    var seqHandler = VNSequenceRequestHandler()
-    
-    var trackingRequests = [TypedTrackRequest]()
-    var trackedRects: [RectangleData] = []
 
-    /// Most recent ball sighting, drawn separately since the ball is no longer a track.
+    /// Most recent ball sighting, drawn separately from the players.
     var ballRect: RectangleData?
-    
-    //TODO: reID using UUID + feature similarity
-//    var rectangles = [UUID: RectangleData]()
-//    var observations = [UUID: VNDetectedObjectObservation]()
-    
-    var objectsToIgnore: [TypedTrackRequest] = []
-    
+
+    /// Players to draw: confirmed and coasting tracks, as of the latest frame. Only
+    /// published while an overlay is being drawn.
+    var playerTracks: [PlayerTrack] = []
+
+    /// The track holding the ball as of the latest frame, published alongside
+    /// `playerTracks`. Nil while the ball is loose or nobody has it.
+    var ballHolderID: Int?
+
+    /// Which player each of `playerTracks` is, by track id, published alongside them.
+    /// Nil when no format was picked; a track missing from it has nobody yet.
+    var playerLabels: [Int: String]?
+
     /// Main-actor game state for the UI to read.
     let gameState = GameState()
 
     /// Shot detection engine. Runs on the frame-processing thread; results are handed
     /// to `gameState` on the main actor.
-    let shotTracker = ShotTracker()
+    let shotTracker: ShotTracker
 
-    /// Finds the ball by re-detecting inside a moving crop each frame. The ball is no
-    /// longer part of the `VNTrackObjectRequest` pool — see `BallDetector`.
+    /// Finds the ball by re-detecting inside a moving crop each frame — see
+    /// `BallDetector`.
     private(set) var ballDetector: BallDetector?
+
+    /// Follows the players between detection passes — see `PlayerTracker`.
+    @ObservationIgnored private(set) var playerTracker: PlayerTracker
+
+    /// Detection numbers gathered on every frame with full-frame results. Read through
+    /// `playerStats`, which adds the tracker's lifetimes.
+    @ObservationIgnored private var playerDetectionStats: PlayerDetectionStats
+    @ObservationIgnored private var previousPlayerSample: PlayerSample?
+
+    /// Where every player track was on each frame with a detection pass, for drawing them
+    /// in replay — see `PlayerPositionRecord`.
+    @ObservationIgnored private(set) var positions = PlayerPositionRecord()
+
+    /// Decides who has the ball on every frame — see `PossessionTracker`.
+    @ObservationIgnored private(set) var possessionTracker: PossessionTracker
+
+    /// Puts the player tracks onto the people on court — see `IdentityTracker`. Nil until
+    /// a format is picked, which leaves tracks as they were.
+    @ObservationIgnored private(set) var identityTracker: IdentityTracker?
+
+    /// The identities corrected with the whole clip in view, once it has ended. Nil until
+    /// then — see `finishIdentities()`.
+    @ObservationIgnored private var resolvedIdentities: IdentityRecord?
+
+    /// Presentation time of the frame open now, for stamping what is recorded on it.
+    @ObservationIgnored private var currentFrameTime: Double?
+
+    /// Frame the rim was last sampled on.
+    @ObservationIgnored private var lastRimSampleFrame: Int?
+
+    struct Config: Codable, Equatable {
+        /// Frames between rim samples — about a second at 30 fps.
+        ///
+        /// Player passes run every few frames, and every one of them sees the rim. Feeding
+        /// them all would fill the rim's 31-sample window from the opening seconds, which is
+        /// exactly when it is most often screened by players. Spacing the samples spreads the
+        /// window across the clip instead.
+        var rimSampleInterval = 30
+    }
+
+    let config: Config
+
+    /// Reads players' colours for the identity checks — see `AppearanceSampler`.
+    @ObservationIgnored let appearanceSampler: AppearanceSampler
+
+    /// Whether anything is drawing the overlay. See `setOverlayUpdates(_:)`.
+    @ObservationIgnored private var publishesOverlay = true
 
     /// Zones kept from before the model finished loading, which is when the ball detector
     /// is built. Without this, zones set during setup would reach the tracker but not the
     /// detector, and a decoy could still pull the moving crop onto itself.
     private var pendingExclusionZones: [ExclusionZone] = []
 
-    init() {
+    /// A restored ball detector's state, kept until the model has loaded and the detector
+    /// exists to take it — the same reason as `pendingExclusionZones`.
+    @ObservationIgnored private var pendingBallDetectorState: BallDetector.State?
+
+    /// Every part's settings, as given. Kept for the parts built later — the ball detector
+    /// once the model loads, identities once a format is picked — and for the shooter
+    /// locator, which is asked fresh on every attempt.
+    @ObservationIgnored let configuration: RunConfiguration
+
+    /// Shot events handed to `gameState` so far. They reach it by a hop onto the main
+    /// actor, so a snapshot waits for `gameState` to have handled this many — otherwise
+    /// it would miss a shot the shot tracker already counts as reported. Written on the
+    /// frame-processing thread.
+    @ObservationIgnored private(set) var eventsSent = 0
+
+    /// - Parameter configuration: settings for every part. The defaults are today's
+    ///   tuning; a pass carried on from a snapshot is built with the settings it started
+    ///   with, so both halves of it are judged alike.
+    init(configuration: RunConfiguration = RunConfiguration()) {
+        self.configuration = configuration
+        self.config = configuration.vision
+        self.appearanceSampler = AppearanceSampler(config: configuration.appearanceSampler)
+        self.shotTracker = ShotTracker(config: configuration.shotDetector)
+        self.playerTracker = PlayerTracker(config: configuration.players)
+        self.possessionTracker = PossessionTracker(config: configuration.possession)
+        self.playerDetectionStats = PlayerDetectionStats(passInterval: configuration.players.detectionInterval)
         print("DEBUG: TRACKER CREATED")
 
         setOverlayUpdates(true)
 
-        shotTracker.onEvent = { [gameState] event in
+        shotTracker.onEvent = { [weak self, gameState] event in
+            self?.eventsSent += 1
             Task { @MainActor in
                 gameState.handle(event)
             }
         }
 
+        // Runs on the frame-processing thread while a sighting is committed, which is
+        // where the possession record is written — so it is read on the same thread.
+        shotTracker.locateShooter = { [weak self] attempt in
+            guard let self, let openedAt = attempt.trajectory.last?.frameID else { return nil }
+            return ShooterLocator.locate(
+                in: self.possessionTracker.record,
+                openedAt: openedAt,
+                config: self.configuration.shooter
+            )
+        }
+
         Task {
             await visionModel = try ObjectDetector.createDetector()
             if let visionModel {
-                setupVision(model: visionModel)
-                ballDetector = BallDetector(model: visionModel)
+                ballDetector = BallDetector(model: visionModel, settings: ballSettings)
                 ballDetector?.exclusionZones = pendingExclusionZones
+                if let pendingBallDetectorState {
+                    ballDetector?.restore(from: pendingBallDetectorState)
+                    self.pendingBallDetectorState = nil
+                }
             }
         }
     }
-    
+
     deinit {
         print("DEBUG: TRACKER DESTROYED")
     }
-    
-    /// Whether per-frame overlay snapshots are published to `gameState`.
+
+    /// Whether per-frame overlay updates are published.
     ///
-    /// Each snapshot is a hop to the main actor, and the only thing that reads one is an
+    /// Each update is a hop to the main actor, and the only thing that reads one is an
     /// overlay drawn over the frames. A pass nobody is watching has no use for them, so
     /// it turns them off — and back on if the user decides to watch after all.
     func setOverlayUpdates(_ enabled: Bool) {
+        publishesOverlay = enabled
+
         shotTracker.onSnapshot = enabled
             ? { [gameState] snapshot in
                 Task { @MainActor in
@@ -104,14 +183,13 @@ class VisionTracker {
     }
 
     func clear() {
-        seqHandler = VNSequenceRequestHandler()
         shotTracker.endOfStream(atFrame: frameCounter)
     }
 
     /// Open a new video frame. Must be called exactly once per frame, before running
-    /// detection or tracking on it.
+    /// detection on it.
     ///
-    /// The frame index used to live inside `trackObservations`, which meant frames that
+    /// The frame index used to live inside the tracking step, which meant frames that
     /// only ran detection never advanced it — several observations would share a frame
     /// ID and collapse the trajectory fit's time axis.
     /// - Parameter timeSeconds: presentation time of this frame. Optional because the
@@ -119,23 +197,88 @@ class VisionTracker {
     ///   seekable afterwards.
     func beginFrame(timeSeconds: Double? = nil) {
         frameCounter &+= 1
-        shotTracker.beginFrame(frameCounter, timeSeconds: timeSeconds)
+        currentFrameTime = timeSeconds
+
+        // Committing the previous frame's sighting is where the shot detector runs.
+        PipelineSignpost.measure("Shot tracking") {
+            shotTracker.beginFrame(frameCounter, timeSeconds: timeSeconds)
+        }
     }
 
-    /// Detect the ball for this frame, inside a crop around its predicted position.
+    /// Run this frame's detection and move every tracked object on.
     ///
-    /// Must be called once per frame, after `beginFrame()`. Independent of the player
-    /// tracking path — the two no longer interfere.
-    func detectBall(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) {
-        guard let ballDetector else { return }
+    /// The ball pass runs every frame. When the player tracker is due a detection pass,
+    /// a full-frame request joins it on the same handler — a handler converts and scales
+    /// the frame once for everything performed on it, where separate handlers each redo
+    /// that work (~9 ms per extra pass on an iPhone 15 Plus). When the ball pass is
+    /// already sweeping the whole frame, its results stand in for the player pass.
+    ///
+    /// Must be called once per frame, after `beginFrame()`.
+    func detect(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) {
+        guard let ballDetector, let visionModel else { return }
 
-        guard let found = ballDetector.detect(
+        let ballPass = ballDetector.makePass(
             pixelBuffer: pixelBuffer,
             orientation: orientation,
             frameID: frameCounter,
             history: shotTracker.ballHistory,
             fit: shotTracker.currentFit
-        ) else { return }
+        )
+
+        let playerRequest = playerTracker.isDetectionDue(frameID: frameCounter) && !ballPass.isSweep
+            ? Self.fullFrameRequest(model: visionModel)
+            : nil
+
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
+        do {
+            try PipelineSignpost.measure(playerRequest == nil ? "Detect: ball" : "Detect: ball + players") {
+                try handler.perform([ballPass.request] + (playerRequest.map { [$0] } ?? []))
+            }
+        } catch {
+            // Each request keeps whatever results it got, so carry on with those rather
+            // than losing the frame.
+            print("Detection failed: \(error)")
+        }
+
+        let found = ballDetector.finish(ballPass)
+
+        // The whole frame's results, when this frame has them: the player pass, or the
+        // ball detector's sweep, which saw the players and the rim along with the ball.
+        let fullFrame: (results: [VNRecognizedObjectObservation], source: PlayerDetectionStats.Source)? =
+            if let playerRequest {
+                (playerRequest.results as? [VNRecognizedObjectObservation] ?? [], .pass)
+            } else if ballPass.isSweep {
+                (ballPass.request.results as? [VNRecognizedObjectObservation] ?? [], .sweep)
+            } else {
+                nil
+            }
+
+        let visible = trackPlayers(fullFrame.map { (PlayerDetection.players(in: $0.results), $0.source) })
+
+        if identityTracker != nil {
+            updateIdentities(of: visible, pixelBuffer: pixelBuffer, orientation: orientation)
+        }
+
+        // After the players, so the ball is judged against where they are on this frame.
+        let holder = updatePossession(
+            ball: found.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) },
+            players: visible
+        )
+
+        if publishesOverlay {
+            let labels = identityTracker?.labels(for: visible)
+            Task { @MainActor in
+                self.playerTracks = visible
+                self.ballHolderID = holder
+                self.playerLabels = labels
+            }
+        }
+
+        if let fullFrame {
+            sampleRim(from: fullFrame.results)
+        }
+
+        guard let found else { return }
 
         shotTracker.ingestBall(
             boundingBox: found.boundingBox,
@@ -154,21 +297,203 @@ class VisionTracker {
         }
     }
 
+    /// Who held the ball, frame by frame, for saving with the run.
+    var possession: PossessionRecord { possessionTracker.record }
+
+    /// Which track was which player, for saving with the run: corrected for the whole clip
+    /// once it has ended, as decided live until then. Nil when no format was picked.
+    var identities: IdentityRecord? { resolvedIdentities ?? identityTracker?.record }
+
+    /// Second-guess the live identities with the whole clip in view — see
+    /// `WholeClipResolver`. Call once the last frame has been analysed, before saving.
+    ///
+    /// The pass can take a few seconds on a long clip, so it runs off the main thread, on
+    /// a copy of the identities: pause the analysis before calling this.
+    func finishIdentities() async {
+        let tracker = identityTracker
+        resolvedIdentities = await Task.detached(priority: .userInitiated) {
+            tracker?.resolvedRecord()
+        }.value
+    }
+
+    /// Set how many people are on court, which turns on identities. Must be called before
+    /// the first frame: a player numbered partway through would be numbered wrongly.
+    func setFormat(_ format: GameFormat?) {
+        identityTracker = format.map { IdentityTracker(format: $0, config: configuration.identity) }
+    }
+
+    /// Detection and tracking numbers for the run so far, for saving with it.
+    var playerStats: PlayerDetectionStats {
+        var stats = playerDetectionStats
+
+        // Tracks still running count with the lifetime they have reached so far:
+        // otherwise a clip whose players never leave shot would report no lifetimes.
+        let live = playerTracker.visibleTracks
+        stats.tracking = PlayerDetectionStats.TrackingSummary(
+            config: playerTracker.config,
+            tracksConfirmed: playerTracker.tracksConfirmed,
+            confirmedTrackFrames: playerTracker.endedTrackFrames
+                + live.reduce(0) { $0 + $1.lastSeenFrame - $1.firstFrame },
+            identity: identityTracker?.summary,
+            appearance: identityTracker?.appearance.summary
+        )
+        return stats
+    }
+
+    // MARK: Players
+
+    /// Move the players on to this frame, folding in `detections` when it had any.
+    /// - Returns: the tracks worth showing, as of this frame.
+    private func trackPlayers(
+        _ detections: (players: [PlayerDetection], source: PlayerDetectionStats.Source)?
+    ) -> [PlayerTrack] {
+        PipelineSignpost.measure("Player tracking") {
+            playerTracker.update(frameID: frameCounter, detections: detections?.players)
+        }
+
+        let visible = playerTracker.visibleTracks
+        positions.record(frameID: frameCounter, time: currentFrameTime, tracks: visible)
+
+        if let detections {
+            previousPlayerSample = playerDetectionStats.record(
+                frameID: frameCounter,
+                detections: detections.players,
+                previous: previousPlayerSample,
+                trackedPlayers: visible.count,
+                source: detections.source
+            )
+        }
+
+        return visible
+    }
+
+    /// Say which player each track is, reading how the clear players look on this frame
+    /// for the identity checks.
+    ///
+    /// Only players matched on this frame are read, so frames without detections read no
+    /// pixels — they only move identities on.
+    private func updateIdentities(
+        of players: [PlayerTrack],
+        pixelBuffer: CVImageBuffer,
+        orientation: CGImagePropertyOrientation
+    ) {
+        let samples = PipelineSignpost.measure("Appearance") {
+            let clean = AppearanceSeparation.cleanTracks(players, at: frameCounter)
+            let read = appearanceSampler.samples(
+                of: clean.map(\.box),
+                in: pixelBuffer,
+                orientation: orientation
+            ) ?? []
+            return Dictionary(zip(clean.map(\.id), read), uniquingKeysWith: { first, _ in first })
+        }
+
+        PipelineSignpost.measure("Identity") {
+            identityTracker?.update(
+                frameID: frameCounter,
+                timeSeconds: currentFrameTime,
+                tracks: players,
+                samples: samples
+            )
+        }
+    }
+
+    /// Decide who has the ball on this frame.
+    /// - Parameter ball: its centre, or nil when it wasn't seen.
+    /// - Returns: the holder's track id, if anyone holds it.
+    private func updatePossession(ball: CGPoint?, players: [PlayerTrack]) -> Int? {
+        PipelineSignpost.measure("Possession") {
+            possessionTracker.update(
+                frameID: frameCounter,
+                timeSeconds: currentFrameTime,
+                ball: ball,
+                players: players
+            )
+        }
+        return possessionTracker.holderID
+    }
+
+    /// A request for the whole frame, every class.
+    private static func fullFrameRequest(model: VNCoreMLModel) -> VNCoreMLRequest {
+        let request = VNCoreMLRequest(model: model)
+        request.imageCropAndScaleOption = .scaleFit
+        return request
+    }
+
+    // MARK: Rim
+
+    /// Offer the rim tracker the most confident rim in a full-frame result, at most once
+    /// every `rimSampleInterval` frames.
+    private func sampleRim(from results: [VNRecognizedObjectObservation]) {
+        guard !shotTracker.isRimUserPlaced else { return }
+        if let lastRimSampleFrame, frameCounter - lastRimSampleFrame < config.rimSampleInterval {
+            return
+        }
+
+        // A lower bar until the rim has settled: it is static, so a run of middling
+        // detections still medians into a good estimate.
+        let threshold: Float = shotTracker.isRimLocked ? 0.6 : 0.5
+
+        guard let rim = results
+            .filter({ $0.labels.first?.identifier == ObjectType.rim.rawValue && $0.confidence > threshold })
+            .max(by: { $0.confidence < $1.confidence })
+        else { return }
+
+        lastRimSampleFrame = frameCounter
+
+        // The rim is static, so every detection is another sample of the same object
+        // rather than a replacement for it. ShotTracker takes the running median so the
+        // scoring plane doesn't wobble under an in-flight shot.
+        shotTracker.ingestRim(boundingBox: rim.boundingBox, frameID: frameCounter)
+
+        guard publishesOverlay, let smoothed = shotTracker.rim else { return }
+        Task { @MainActor in
+            self.hoop = [
+                RectangleData(
+                    id: UUID(),
+                    rect: smoothed.boundingBox,
+                    label: ObjectType.rim.rawValue,
+                    confidence: rim.confidence,
+                    colour: .red)
+            ]
+        }
+    }
+
+    // MARK: Configuration
+
     /// How this tracker is currently configured, for recording with an analysis run.
     ///
     /// Assembled from the live objects rather than from defaults, so the record reflects
     /// what actually ran.
     func currentConfiguration() -> RunConfiguration {
-        RunConfiguration(
-            shotDetector: ShotDetectorConfig(),
-            ballROI: ballDetector?.config ?? BallROIPredictor.Config(),
-            fullFrameBallConfidence: Double(ballDetector?.fullFrameConfidence ?? 0.45),
-            croppedBallConfidence: Double(ballDetector?.croppedConfidence ?? 0.25),
+        let ballSettings = ballDetector?.settings ?? self.ballSettings
+        return RunConfiguration(
+            // Never changes once the shot tracker is built, so what it was given is what
+            // it uses.
+            shotDetector: configuration.shotDetector,
+            ballROI: ballSettings.roi,
+            fullFrameBallConfidence: Double(ballSettings.fullFrameConfidence),
+            croppedBallConfidence: Double(ballSettings.croppedConfidence),
             modelIdentifier: ObjectDetector.modelIdentifier,
             rimSource: {
                 guard shotTracker.rim != nil else { return .none }
                 return shotTracker.isRimUserPlaced ? .userPlaced : .detected
-            }()
+            }(),
+            players: playerTracker.config,
+            possession: possessionTracker.config,
+            shooter: configuration.shooter,
+            identity: identityTracker?.config ?? configuration.identity,
+            appearanceSampler: appearanceSampler.config,
+            vision: config,
+            rimPreflight: configuration.rimPreflight
+        )
+    }
+
+    /// The ball detector's settings, as the configuration gives them.
+    private var ballSettings: BallDetector.Config {
+        BallDetector.Config(
+            roi: configuration.ballROI,
+            fullFrameConfidence: Float(configuration.fullFrameBallConfidence),
+            croppedConfidence: Float(configuration.croppedBallConfidence)
         )
     }
 
@@ -211,352 +536,94 @@ class VisionTracker {
         }
         return visionModel
     }
-    
-    func setupVision(model: VNCoreMLModel) {
-        
-        // === Setup recognition request for objects defined by input model ===
-        // pixel buffer stream camera causes a new VNImageRequestHandler to be created
-        // this runs the following completionHander code every 10 sec that:
-        //      Initiates a new array of tracking requests + UI draws on every object detected
-        let objectRecognition = VNCoreMLRequest(model: model, completionHandler: { (request, error) in
-            
-            let runFullObservation = self.shouldPredict
-            if runFullObservation {
-                // Clear any previous 'initial' object detections
-                Task { @MainActor in
-                    self.rects.removeAll()
-                }
-                
-                self.shouldPredict = false
-                
-                // reset sequence handler:
-                //      - can only track 6 simultanuous requests
-                //      - memory consumption ramps up crazy quick when left alive for more than a few seconds
-                self.seqHandler = VNSequenceRequestHandler()
-            }
-            
-            if let results = request.results as? [VNRecognizedObjectObservation] {
-                
-                // Keep sampling the rim until the estimate has settled, not merely
-                // until the first one lands. Detection runs on few frames, so stopping
-                // at the first sighting freezes the scoring plane on one noisy box with
-                // no way to recover from a bad one.
-                if !self.shotTracker.isRimLocked {
-                    // A lower bar than the general filter below: the rim is static, so a
-                    // run of middling detections still medians into a good estimate.
-                    let hoops = results.filter({
-                        $0.labels.first?.identifier == "Rim"
-                        &&
-                        $0.confidence > 0.5
-                    })
-                    var temp: [TypedTrackRequest] = []
-                    if !hoops.isEmpty {
-                        self.createNewTrackingRequests(
-                            newObservations: hoops,
-                            &temp)
-                    }
-                }
-                
-                // filter minimum confidence
-                var newObservations = results.filter { objDet in
-                    objDet.confidence > 0.6
-                }
-                guard !newObservations.isEmpty else {
-                    return
-                }
-                
-                
-                // we dont need to track hoop
-                // but check it hasnt moved
-                
-//                if !self.hoop.isEmpty {
-//                    newObservations = newObservations.filter({ objDet in
-//                        objDet.labels.first?.identifier != "Rim"
-//                    })
-//                }
-                
-                // prepare new tracking requests (combine existing with new)
-                var outputTrackingRequests = [TypedTrackRequest]()
-                
-                let existingTracks = self.trackingRequests
-                if existingTracks.isEmpty { // make initial tracking requests
-                    self.createNewTrackingRequests(
-                        newObservations: newObservations,
-                        &outputTrackingRequests)
-                    
-                    
-                    // All six slots go to players now that the ball is detected by
-                    // crop instead of tracked.
-                    let finalTracks = Array(
-                        outputTrackingRequests
-                            .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
-                            .prefix(6)
-                    )
-                    
-                    self.trackingRequests = finalTracks
-                    return
-                }
-                
-                do {
-                    // TODO: update matrix to work with new tracks
-                    // Maybe this is cause of players being assigned as 'ball'?
-                    if !newObservations.isEmpty {
-                        // create cost matrix of exsitingTracks against new observations
-                        
-                        let vectorRows: [Vector] = existingTracks.map { trackReq in
-                            return Vector(
-                                newObservations.map { objectDetection in
-                                    if trackReq.type.rawValue != objectDetection.labels.first!.identifier {
-                                        return 1.0 // only calculate matches if the objects are the same type
-                                    }
-                                    
-                                    let overlap = self.iou(
-                                        box1: trackReq.request.inputObservation.boundingBox,
-                                        box2: objectDetection.boundingBox
-                                    )
-                                    return 1.0 - overlap // lowest cost
-                                }
-                            )
-                        }
-                        let costMatrix: Matrix = Matrix(vectorRows)
-                        
-                        // find best matches using Hungarian algorithm
-                        let assignments = try HungarianAlgorithm.findOptimalAssignment(costMatrix)
-                        
-                        // merge best new observations with existing tracks
-                        for index in assignments.rowIndices.indices {
-                            // get the assignment indicies
-                            let trackIndex = assignments.rowIndices[index]
-                            let bestObservationIndex = assignments.columnIndices[index]
-                            
-                            let track = existingTracks[trackIndex]
-                            let bestObservation = newObservations[bestObservationIndex]
-                            track.request.inputObservation = bestObservation
-                            outputTrackingRequests.append(track)
-                        }
-                    }
-                    
-                    // if existingTracks.count > newObservations.count we will have left over tracking requests
-                    // continue any remaining tracks
-                    for trackReq in existingTracks{
-                        if !outputTrackingRequests.contains(where:
-                                                                {$0.request.inputObservation.uuid == trackReq.request.inputObservation.uuid}) {
-                            outputTrackingRequests.append(trackReq)
-                        }
-                    }
-                    
-                    // if existingTracks.count < newObservations.count we will have left over new observations
-                    // create new tracking from remainging observations
-                    let remainingObservations = newObservations.filter { ob in
-                        return !outputTrackingRequests.contains { outputReq in
-                            outputReq.request.inputObservation.uuid == ob.uuid
-                        }
-                    }
-                    
-                    self.createNewTrackingRequests(newObservations: remainingObservations, &outputTrackingRequests)
-                    
-                    
-                    
-                    let finalTracks = Array(
-                        outputTrackingRequests
-                            .sorted(by: { $0.request.inputObservation.confidence > $1.request.inputObservation.confidence })
-                            .prefix(6)
-                    )
-                    self.trackingRequests = finalTracks
-                    
-                } catch {
-                    print("Error occured during tracking merge")
-                }
-            }
-        })
-        objectRecognition.imageCropAndScaleOption = VNImageCropAndScaleOption.scaleFit
-        self.requests = [objectRecognition]
-    }
-    
-    
-    private func createNewTrackingRequests(newObservations: [VNRecognizedObjectObservation], _ outputTrackingRequests: inout [TypedTrackRequest]) {
-        for o in newObservations {
-            
-            if o.labels.first?.identifier == "Rim" {
-                // The rim is static, so every detection is another sample of the same
-                // object rather than a replacement for it. ShotTracker takes the running
-                // median so the scoring plane doesn't wobble under an in-flight shot.
-                shotTracker.ingestRim(boundingBox: o.boundingBox, frameID: frameCounter)
-
-                if let smoothed = shotTracker.rim {
-                    Task { @MainActor in
-                        self.hoop = [
-                            RectangleData(
-                                id: UUID(),
-                                rect: smoothed.boundingBox,
-                                label: o.labels[0].identifier,
-                                confidence: o.confidence,
-                                colour: Color.red)
-                        ]
-                    }
-                }
-                continue
-            }
-            
-            // The ball is found by BallDetector's moving crop, not by visual tracking,
-            // so it never enters the track pool. That frees a slot for another player
-            // and stops a lost ball from churning the player track list.
-            if o.labels.first?.identifier == ObjectType.ball.rawValue {
-                continue
-            }
-
-            let trackType: ObjectType = .player
-
-            let trackRequest = TypedTrackRequest(observation: o, type: trackType)
-            if objectsToIgnore.contains(where: { req in
-                req.request.inputObservation.boundingBox.origin.isRoughlyEqual(to: o.boundingBox.origin)
-            }) {
-                // dont re add an ignored object
-                print("NOT ADDING DUE TO IGNORANCE")
-                continue
-            }
-            trackRequest.request.trackingLevel = .accurate
-            outputTrackingRequests.append(trackRequest)
-            
-            
-            // on UI update initial bounding boxes
-            Task { @MainActor in
-                self.rects.append(
-                    RectangleData(
-                        id: UUID(),
-                        rect: o.boundingBox,
-                        label: o.labels[0].identifier,
-                        confidence: o.confidence,
-                        colour: Color.red.opacity(0.2))
-                )
-            }
-        }
-    }
-    
-    
-    private func iou(box1: CGRect, box2: CGRect) -> Double {
-        // IoU = area of overlap / area of union
-        let intersectionRect = box1.intersection(box2)
-        if intersectionRect.isNull || intersectionRect.width <= 0 || intersectionRect.height <= 0 {
-            return 0.0
-        }
-        
-        let intersectionArea = intersectionRect.width * intersectionRect.height
-        
-        let box1Area = box1.width * box1.height
-        let box2Area = box2.width * box2.height
-        
-        let unionArea = box1Area + box2Area - intersectionArea
-        
-        let iou = intersectionArea / unionArea
-        return iou
-    }
-    
-    
-    func makeObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
-        let vnHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-        
-        try vnHandler.perform(requests)
-    }
-    
-    
-    func trackObservations(pixelBuffer: CVImageBuffer, orientation: CGImagePropertyOrientation) throws {
-        do {
-            try seqHandler.perform(trackingRequests.map{ $0.request }, on: pixelBuffer, orientation: orientation)
-            
-            var tempTrackedRects: [RectangleData] = []
-            
-            trackingRequests = trackingRequests.compactMap { trackReq in
-                // Only handle first result
-                guard let newObs = trackReq.request.results?.first as? VNDetectedObjectObservation else {
-                    trackReq.lowConfidenceFrames += 1
-                    
-                    if trackReq.lowConfidenceFrames >= 5 {
-                        trackReq.request.isLastFrame = true
-                        return nil
-                    }
-                    
-                    return trackReq
-                }
-                
-                
-                // Drop if confidence is too low
-                guard newObs.confidence > 0.2 else {
-                    trackReq.lowConfidenceFrames += 1
-                    
-                    if trackReq.lowConfidenceFrames >= 5 {
-                        trackReq.request.isLastFrame = true
-                        return nil
-                    }
-                    // feed in new observation for new request
-                    trackReq.request.inputObservation = newObs
-                    return trackReq
-                }
-               
-                //Temporary: While model/tracking struggles with false positives, if an object has not moved, increase low confidnce
-                if trackReq.request.inputObservation.boundingBox.origin.isRoughlyEqual(to: newObs.boundingBox.origin) {
-                    print("Not moved: \(trackReq.lowConfidenceFrames)")
-                    
-                    trackReq.lowConfidenceFrames += 1
-                    if trackReq.lowConfidenceFrames >= 3 {
-                        print("Removing track")
-                        trackReq.request.isLastFrame = true
-                        
-                        objectsToIgnore.append(trackReq)
-                        
-                        return nil
-                    }
-                } else {
-                    // reset lost frame count
-                    trackReq.lowConfidenceFrames = 0
-                }
-                
-                tempTrackedRects.append(
-                    RectangleData(
-                        id: newObs.uuid,
-                        rect: newObs.boundingBox,
-                        label: "Player",
-                        confidence: newObs.confidence,
-                        colour: .green)
-                )
-                
-                // Update the input observation for continued tracking
-                trackReq.request.inputObservation = newObs
-                
-                return trackReq
-            }
-            
-            // fallback if we lose all tracks
-            if trackingRequests.isEmpty {
-                shouldPredict = true
-            }
-
-            // Update UI with tracked object bounding boxes
-            Task { @MainActor in
-                self.trackedRects = tempTrackedRects
-            }
-        } catch let error as NSError {
-            
-            print("Tracking failed: \(error.description)")
-        }
-    }
-    
 }
 
-extension CGPoint {
-    
-    //Coord: (0.21090893215603299, 0.7338885625203451)
-    //Coord: (0.2111816264964916, 0.7341182708740235)
-    //Coord: (0.2111816264964916, 0.7341182708740235)
-    //Coord: (0.21154762550636574, 0.7343326568603515)
-    //Coord: (0.21154762550636574, 0.7343326568603515)
-    
-    // we want small changes like above to be marked essentailly as the same point
-    func isRoughlyEqual(to other: CGPoint) -> Bool {
-        if abs(self.x - other.x) < 0.001 && abs(self.y - other.y) < 0.001 {
-            return true
-        }
-        return false
+extension VisionTracker.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        rimSampleInterval = try container.decode(.rimSampleInterval, or: defaults.rimSampleInterval)
     }
 }
 
+// MARK: - Snapshot
+
+extension VisionTracker {
+    /// Everything the pipeline has learnt so far, gathered from each part's own state, so
+    /// whatever saves a snapshot needn't know what is inside. Left out: the model (loaded
+    /// fresh), the configs (the tracker is built with them), blocked areas (reapplied from
+    /// the video's saved data), what the overlay last drew (redrawn on the next frame) and
+    /// the re-solved identities (only made once a clip has ended).
+    struct State: Codable, Equatable {
+        var frameCounter: Int
+        var currentFrameTime: Double?
+        var lastRimSampleFrame: Int?
+
+        var shotTracker: ShotTracker.State
+        var ballDetector: BallDetector.State?
+
+        var playerTracker: PlayerTracker.State
+        var playerDetectionStats: PlayerDetectionStats
+        var previousPlayerSample: PlayerSample?
+        var positions: PlayerPositionRecord
+        var possession: PossessionTracker.State
+
+        /// Nil when no format was picked.
+        var identity: IdentityTracker.State?
+    }
+
+    /// Read only between frames, while nothing is processing one.
+    var snapshotState: State {
+        State(
+            frameCounter: frameCounter,
+            currentFrameTime: currentFrameTime,
+            lastRimSampleFrame: lastRimSampleFrame,
+            shotTracker: shotTracker.snapshotState,
+            ballDetector: ballDetector?.snapshotState ?? pendingBallDetectorState,
+            playerTracker: playerTracker.snapshotState,
+            playerDetectionStats: playerDetectionStats,
+            previousPlayerSample: previousPlayerSample,
+            positions: positions,
+            possession: possessionTracker.snapshotState,
+            identity: identityTracker?.snapshotState
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off. Call before the first frame, instead of
+    /// `setFormat(_:)`: the format comes back with the identities.
+    func restore(from snapshot: State) {
+        frameCounter = snapshot.frameCounter
+        currentFrameTime = snapshot.currentFrameTime
+        lastRimSampleFrame = snapshot.lastRimSampleFrame
+
+        shotTracker.restore(from: snapshot.shotTracker)
+
+        if let state = snapshot.ballDetector {
+            if let ballDetector {
+                ballDetector.restore(from: state)
+            } else {
+                // The model is still loading; the detector takes this when it is built.
+                pendingBallDetectorState = state
+            }
+        }
+
+        playerTracker.restore(from: snapshot.playerTracker)
+        playerDetectionStats = snapshot.playerDetectionStats
+        previousPlayerSample = snapshot.previousPlayerSample
+        positions = snapshot.positions
+        possessionTracker.restore(from: snapshot.possession)
+
+        // Rebuilt from the saved record's format, then given back its players' ids rather
+        // than the new ones a fresh tracker makes up.
+        identityTracker = snapshot.identity.map { state in
+            var tracker = IdentityTracker(
+                format: state.record.format,
+                config: configuration.identity
+            )
+            tracker.restore(from: state)
+            return tracker
+        }
+        resolvedIdentities = nil
+    }
+}

@@ -26,28 +26,13 @@ struct DetectionOverlayView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ForEach(processor.tracker.rects) { rectData in
-                let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                Rectangle()
-                    .stroke(rectData.colour, lineWidth: 2)
-                    .frame(width: adjustedRect.width, height: adjustedRect.height)
-                    .position(x: adjustedRect.midX, y: adjustedRect.midY)
+            PlayerTracksOverlay(
+                tracks: processor.tracker.playerTracks,
+                holderID: processor.tracker.ballHolderID,
+                shooterID: processor.tracker.gameState.currentAttempt?.shooter?.playerID,
+                labels: processor.tracker.playerLabels
+            )
 
-                Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                    .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                    .foregroundColor(.red)
-            }
-            ForEach(processor.tracker.trackedRects) { rectData in
-                let adjustedRect = adjustRectForView(rect: rectData.rect, viewSize: geometry.size)
-                Rectangle()
-                    .stroke(rectData.colour, lineWidth: 2)
-                    .frame(width: adjustedRect.width, height: adjustedRect.height)
-                    .position(x: adjustedRect.midX, y: adjustedRect.midY)
-                
-                Text("\(rectData.label) (\(Int(rectData.confidence * 100))%)")
-                    .position(x: adjustedRect.midX, y: adjustedRect.minY - 10)
-                    .foregroundColor(.red)
-            }
             let gameState = processor.tracker.gameState
 
             // The ball is detected rather than tracked, so it is
@@ -158,5 +143,64 @@ struct DetectionOverlayView: View {
 
     private func normalizedToView(_ point: CGPoint, viewSize: CGSize) -> CGPoint {
         CGPoint(x: point.x * viewSize.width, y: (1 - point.y) * viewSize.height)
+    }
+}
+
+/// The tracked players, drawn over the frame. Shared by the analysis overlay and the
+/// live camera so the two can't drift apart.
+///
+/// A coasting player — not matched on the latest pass, carried on its prediction — is
+/// drawn faded and dashed, so a box that is only a guess doesn't look like a sighting.
+/// Whoever has the ball is drawn orange; a track that isn't anybody yet, grey.
+struct PlayerTracksOverlay: View {
+    let tracks: [PlayerTrack]
+
+    /// The track holding the ball, if any.
+    var holderID: Int?
+
+    /// Whoever took the shot now in flight. Labelled, and drawn orange like the holder:
+    /// the ball is theirs until someone else takes it.
+    var shooterID: Int?
+
+    /// Which player each track is, by track id. Nil labels tracks by their own id, as
+    /// before identities; a track missing from it is shown as "?".
+    var labels: [Int: String]?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ForEach(tracks) { track in
+                let rect = viewRect(for: track.box, in: geometry.size)
+                let isCoasting = track.state == .coasting
+                let isFeatured = track.id == holderID || track.id == shooterID
+                let label = labels.map { $0[track.id] ?? "?" } ?? "P\(track.id)"
+                let isNobody = labels != nil && labels?[track.id] == nil
+                let colour = (isFeatured ? Color.orange : isNobody ? Color.gray : Color.green)
+                    .opacity(isCoasting ? 0.45 : 1)
+
+                Rectangle()
+                    .stroke(
+                        colour,
+                        style: StrokeStyle(lineWidth: isFeatured ? 3 : 2, dash: isCoasting ? [6, 4] : [])
+                    )
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+
+                Text(track.id == shooterID ? "\(label) · Shooter" : label)
+                    .font(.caption.bold())
+                    .foregroundStyle(colour)
+                    .position(x: rect.midX, y: rect.minY - 10)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Vision space (origin bottom-left) to view space (origin top-left).
+    private func viewRect(for box: CGRect, in size: CGSize) -> CGRect {
+        CGRect(
+            x: box.minX * size.width,
+            y: (1 - box.maxY) * size.height,
+            width: box.width * size.width,
+            height: box.height * size.height
+        )
     }
 }

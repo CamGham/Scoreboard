@@ -47,6 +47,15 @@ struct ShotReplayView: View {
     /// Called when the user rules on this shot. Nil clears an existing ruling.
     var onVerdict: ((ShotAttempt.UserVerdict?) -> Void)?
 
+    /// The run's possession record, for the ring under whoever has the ball.
+    var possession: PossessionRecord?
+
+    /// Which track was which player, to name the players.
+    var identities: IdentityRecord?
+
+    /// Where every player was, for a ring under each. Nil draws the holder's alone.
+    var positions: PlayerPositionRecord?
+
     @State private var replay: ShotReplayPlayer?
 
     /// Controls are overlaid, so they can be dismissed to get a clear look at the shot.
@@ -166,6 +175,15 @@ struct ShotReplayView: View {
 
                 ZStack(alignment: .topLeading) {
                     PlayerLayerView(player: replay.player)
+
+                    PlayerRingsOverlay(
+                        positions: positions,
+                        possession: possession,
+                        identities: identities,
+                        time: replay.currentTime
+                    )
+                        .frame(width: content.width, height: content.height)
+                        .offset(x: content.minX, y: content.minY)
 
                     ShotTrajectoryOverlay(attempt: attempt, upTo: replay.currentTime)
                         .frame(width: content.width, height: content.height)

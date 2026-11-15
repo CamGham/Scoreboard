@@ -63,6 +63,9 @@ struct AnalysisReviewView: View {
     /// is what's in the way.
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
+    /// Whether the app is on screen, for holding a re-analysis while it is away.
+    @Environment(\.scenePhase) private var scenePhase
+
     private var isCompactHeight: Bool { verticalSizeClass == .compact }
 
     @State private var reanalyser = SectionReanalyser()
@@ -105,6 +108,11 @@ struct AnalysisReviewView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: showsChrome)
         .statusBarHidden()
+        // Same reason as the first pass: a re-analysis can't run with the phone locked.
+        .keepsScreenAwake(reanalyser.isRunning && !reanalyser.isPaused)
+        .onChange(of: scenePhase) { _, phase in
+            reanalyser.sceneChanged(isActive: phase == .active)
+        }
         .onAppear {
             let review = AnalysisReviewPlayer(asset: asset)
             player = review
@@ -188,6 +196,17 @@ struct AnalysisReviewView: View {
 
                 ZStack(alignment: .topLeading) {
                     PlayerLayerView(player: player.player)
+
+                    // Unlike the shot path, players matter between shots too, so their
+                    // rings are drawn the whole way through.
+                    PlayerRingsOverlay(
+                        positions: gameState.positions,
+                        possession: gameState.possession,
+                        identities: gameState.identities,
+                        time: player.currentTime
+                    )
+                        .frame(width: content.width, height: content.height)
+                        .offset(x: content.minX, y: content.minY)
 
                     // The overlay only appears while a shot is on screen. Drawing it the
                     // whole way through would leave a stale path hanging over footage it

@@ -25,6 +25,12 @@ struct ShotTrajectoryOverlay: View {
         return attempt.trajectory.filter { ($0.timeSeconds ?? -.infinity) <= upTo }
     }
 
+    /// The take-off marker appears once the shooter has got there.
+    private var takeOffHasHappened: Bool {
+        guard let upTo, let time = attempt.shooter?.takeOffTime else { return true }
+        return upTo >= time
+    }
+
     /// The crossing marker only appears once the ball has actually got there.
     private var crossingHasHappened: Bool {
         guard let upTo, let crossing = decidingCrossing else { return upTo == nil }
@@ -78,6 +84,21 @@ struct ShotTrajectoryOverlay: View {
                         .fill(resultColour.opacity(0.5))
                         .frame(width: 3, height: 3)
                         .position(point(observation.center, in: size))
+                }
+
+                // Where the shot was taken from: the shooter's feet at take-off, marked on
+                // the floor. The camera is fixed, so the spot holds on any frame.
+                if let shooter = attempt.shooter, takeOffHasHappened {
+                    let at = point(shooter.takeOffPoint, in: size)
+
+                    Ellipse()
+                        .stroke(Color.white, lineWidth: 2)
+                        .frame(width: 22, height: 8)
+                        .position(at)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 5, height: 5)
+                        .position(at)
                 }
 
                 // Where it met the scoring plane.

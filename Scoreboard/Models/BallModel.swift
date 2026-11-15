@@ -52,7 +52,7 @@ struct BallObservation: Codable, Equatable {
     }
 }
 
-enum BallState: String {
+enum BallState: String, Codable {
     case idle
     /// Airborne on a ballistic arc that could reach the rim.
     case inFlight

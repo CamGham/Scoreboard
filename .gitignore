@@ -60,3 +60,6 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Learning-mode notes (VibeWise) — personal, not part of the app
+.vibe-wise/

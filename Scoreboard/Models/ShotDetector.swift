@@ -100,6 +100,11 @@ struct ShotAttempt: Codable, Identifiable, Equatable {
     /// The user's ruling, if they have given one.
     var userVerdict: UserVerdict?
 
+    /// Who took the shot and where from, read from possession when the attempt opened.
+    /// Nil when nobody clearly had the ball just before — including attempts picked up
+    /// late — and for runs from before it was recorded.
+    var shooter: ShooterSighting? = nil
+
     /// The verdict that counts — the user's where they gave one, else the detector's.
     var effectiveResult: Result {
         switch userVerdict {
@@ -447,6 +452,11 @@ struct ShotDetector {
         return abs(ball.x - rim.center.x) <= reach
     }
 
+    /// Record who took the attempt now in flight.
+    mutating func attachShooter(_ shooter: ShooterSighting) {
+        currentAttempt?.shooter = shooter
+    }
+
     private mutating func openAttempt(rim: HoopGeometry, late: Bool) -> ShotEvent {
         let trajectory = history
         let startFrame = trajectory.first?.frameID ?? 0
@@ -662,5 +672,45 @@ struct ShotDetector {
             let position = predictPosition(fit: fit, t: t)
             return CGPoint(x: position.x, y: position.y)
         }
+    }
+}
+
+// MARK: - Snapshot
+
+extension ShotDetector {
+    /// Everything that changes while a pass runs, for carrying a pass on after the app
+    /// was closed. The config isn't here: the detector it is restored into is built with
+    /// it, the way any detector is.
+    struct State: Codable, Equatable {
+        var history: [BallObservation]
+        var currentAttempt: ShotAttempt?
+        var ballState: BallState
+        var currentFit: MotionFit?
+        var predictedCrossingFrame: Double?
+        var cooldownUntilFrame: Int?
+        var framesBelowRim: Int
+    }
+
+    var snapshotState: State {
+        State(
+            history: history,
+            currentAttempt: currentAttempt,
+            ballState: state,
+            currentFit: currentFit,
+            predictedCrossingFrame: predictedCrossingFrame,
+            cooldownUntilFrame: cooldownUntilFrame,
+            framesBelowRim: framesBelowRim
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off.
+    mutating func restore(from snapshot: State) {
+        history = snapshot.history
+        currentAttempt = snapshot.currentAttempt
+        state = snapshot.ballState
+        currentFit = snapshot.currentFit
+        predictedCrossingFrame = snapshot.predictedCrossingFrame
+        cooldownUntilFrame = snapshot.cooldownUntilFrame
+        framesBelowRim = snapshot.framesBelowRim
     }
 }

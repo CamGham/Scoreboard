@@ -82,6 +82,24 @@ final class GameState {
     /// Frame of the most recent made basket, for a score flash in the UI.
     private(set) var lastMadeFrame: Int?
 
+    /// Shot events handled so far — see `VisionTracker.eventsSent`, which a snapshot
+    /// waits for this to catch up with. Not drawn, so not observed.
+    @ObservationIgnored private(set) var eventsHandled = 0
+
+    /// Who held the ball, frame by frame, for drawing in replay.
+    ///
+    /// Handed over once — when an analysis finishes, or a saved run is loaded — rather
+    /// than streamed: the record grows every frame, and nothing replays while an
+    /// analysis is still running.
+    private(set) var possession: PossessionRecord?
+
+    /// Which track was which player, handed over with `possession` to label its holder.
+    private(set) var identities: IdentityRecord?
+
+    /// Where every player was, for drawing them in replay. Kept beside the run rather
+    /// than in it, so it arrives separately — nil until then, and for older runs.
+    private(set) var positions: PlayerPositionRecord?
+
     // Convenience accessors so views don't have to reach through `snapshot`.
     var ballHistory: [BallObservation] { snapshot.ballHistory }
     var rim: HoopGeometry? { snapshot.rim }
@@ -119,6 +137,8 @@ final class GameState {
     }
 
     func handle(_ event: ShotEvent) {
+        eventsHandled += 1
+
         switch event {
         case .attemptStarted, .rimContact:
             break
@@ -263,6 +283,24 @@ final class GameState {
         shotTimeline = matched.filter { $0.result == .made || $0.result == .missed }
         abandonedAttempts = matched.filter { $0.result == .abandoned }
         lastMadeFrame = shotTimeline.last(where: { $0.result == .made })?.endFrame
+        possession = run.possession
+        identities = run.identities
+    }
+
+    /// Hand over a finished analysis's possession and identity records.
+    /// Hand over a saved run's player positions, loaded from beside it.
+    func setPositions(_ record: PlayerPositionRecord?) {
+        positions = record
+    }
+
+    func setPlayerRecords(
+        possession: PossessionRecord?,
+        identities: IdentityRecord?,
+        positions: PlayerPositionRecord? = nil
+    ) {
+        self.positions = positions
+        self.possession = possession
+        self.identities = identities
     }
 
     func reset() {
@@ -270,5 +308,40 @@ final class GameState {
         shotTimeline.removeAll()
         abandonedAttempts.removeAll()
         lastMadeFrame = nil
+        possession = nil
+        identities = nil
+        positions = nil
+    }
+}
+
+// MARK: - Snapshot
+
+extension GameState {
+    /// The shots found so far. The user's rulings aren't here — they are reloaded from
+    /// the video's saved data, as on any pass — and neither is the overlay picture, which
+    /// the next frame redraws.
+    struct State: Codable, Equatable {
+        var shotTimeline: [ShotAttempt]
+        var abandonedAttempts: [ShotAttempt]
+        var lastMadeFrame: Int?
+    }
+
+    var snapshotState: State {
+        State(
+            shotTimeline: shotTimeline,
+            abandonedAttempts: abandonedAttempts,
+            lastMadeFrame: lastMadeFrame
+        )
+    }
+
+    func restore(from snapshot: State) {
+        shotTimeline = snapshot.shotTimeline
+        abandonedAttempts = snapshot.abandonedAttempts
+        lastMadeFrame = snapshot.lastMadeFrame
+
+        // Starts counting overlay pictures again from nothing, so the restored shot
+        // tracker's next one — numbered on from where it left off — is never dropped
+        // as stale.
+        self.snapshot = GameSnapshot()
     }
 }

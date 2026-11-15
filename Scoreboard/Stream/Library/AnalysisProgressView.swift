@@ -18,6 +18,10 @@ struct AnalysisStartCard: View {
     let clipDuration: Double
     let hasRim: Bool
 
+    /// How many people are on court. Picked here because it has to be known before the
+    /// first frame — players are numbered in the order they are first seen.
+    @Binding var format: GameFormat?
+
     let onWatch: () -> Void
     let onRunWithoutWatching: () -> Void
 
@@ -45,6 +49,8 @@ struct AnalysisStartCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            formatPicker
+
             choice(
                 title: "Start analysing",
                 detail: "Every frame on screen, with what the detector sees",
@@ -70,6 +76,35 @@ struct AnalysisStartCard: View {
         return hasRim
             ? "\(length) of footage, rim found."
             : "\(length) of footage. No rim found yet — you can place it as it runs."
+    }
+
+    private var formatPicker: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Players")
+                    .font(.subheadline.weight(.semibold))
+                Text(format.map { "\($0.playerCount) on court, each labelled for the whole clip" }
+                     ?? "Not set: tracks aren't put onto people")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Picker("Players", selection: $format) {
+                Text("Not set").tag(GameFormat?.none)
+                ForEach(GameFormat.allCases) { format in
+                    Text(format.title).tag(Optional(format))
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+        }
+        .padding(.leading, 14)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     /// Not currently shown — see `card`.
@@ -231,5 +266,38 @@ struct AnalysisProgressStage: View {
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.6))
         }
+    }
+}
+
+/// Covers the analysis while it wraps up after a pass — identities re-solved, the run
+/// written — so the screen doesn't sit frozen and then vanish.
+///
+/// A spinner rather than a bar: the re-solve repeats until nothing changes, so how long
+/// it will take isn't known up front.
+struct FinishingAnalysisOverlay: View {
+    let step: String
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+                Text("Finishing analysis")
+                    .font(.headline)
+                Text(step)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
+            }
+            .padding(24)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .animation(.default, value: step)
+        }
+        // Nothing underneath should take a tap while the run is being written.
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
