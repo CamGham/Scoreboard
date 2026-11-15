@@ -260,6 +260,133 @@ func rangedPassCoversOnlyItsWindow() async throws {
     #expect(reported.allSatisfy { $0 >= 0 && $0 <= 1 })
 }
 
+@Test("Running out of frames pauses the pass as finished, not as something to resume")
+func finishedPassPausesAsEndOfClip() async throws {
+    let url = try await makeTestClip(seconds: 1)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let processor = try await VideoProcessor.create(
+        videoAsset: AVURLAsset(url: url),
+        producesPreviewFrames: false
+    )
+
+    processor.resume()
+    await processor.play()
+
+    #expect(processor.isComplete)
+    #expect(processor.playback == .pause)
+    #expect(processor.pauseReason == .endOfClip)
+}
+
+@Test("A paused pass reads nothing when asked to play")
+func pausedPassReadsNoFrames() async throws {
+    let url = try await makeTestClip(seconds: 1)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let processor = try await VideoProcessor.create(
+        videoAsset: AVURLAsset(url: url),
+        producesPreviewFrames: false
+    )
+    let before = processor.frames
+
+    processor.pause(.userInitiated)
+    await processor.play()
+
+    #expect(processor.frames == before)
+    #expect(processor.pauseReason == .userInitiated)
+
+    // And the loop it briefly claimed is free again: resuming reads to the end.
+    processor.resume()
+    await processor.play()
+
+    #expect(processor.isComplete)
+}
+
+// MARK: - Rebuilding a reader
+
+/// Presentation times of every frame a pass analyses, optionally swapping in a new reader
+/// part-way through — the way an interrupted one is replaced.
+private func analysedTimes(
+    of url: URL,
+    range: CMTimeRange? = nil,
+    rebuildingAfter rebuildFrame: Int? = nil
+) async throws -> [Double] {
+    let processor = try await VideoProcessor.create(
+        videoAsset: AVURLAsset(url: url),
+        timeRange: range,
+        producesPreviewFrames: false
+    )
+
+    var times: [Double] = []
+    processor.onFrameProcessed = { time in
+        if let time { times.append(time) }
+        if times.count == rebuildFrame { processor.pause(.userInitiated) }
+    }
+
+    processor.resume()
+    await processor.play()
+
+    if rebuildFrame != nil {
+        #expect(!processor.isComplete)
+        #expect(processor.rebuildReader())
+        processor.resume()
+        await processor.play()
+    }
+
+    #expect(processor.isComplete)
+    #expect(processor.readFailure == nil)
+    return times
+}
+
+@Test("A rebuilt reader picks up on the very next frame — none repeated, none missed")
+func rebuiltReaderContinuesExactly() async throws {
+    let url = try await makeTestClip(seconds: 2)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let straight = try await analysedTimes(of: url)
+    let rebuilt = try await analysedTimes(of: url, rebuildingAfter: 23)
+
+    #expect(straight.count > 23)
+    #expect(rebuilt == straight)
+}
+
+@Test("A rebuilt reader on a section still stops at the section's end")
+func rebuiltReaderKeepsSectionEnd() async throws {
+    let url = try await makeTestClip(seconds: 3)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let section = CMTimeRange(
+        start: CMTime(seconds: 0.5, preferredTimescale: 600),
+        end: CMTime(seconds: 1.5, preferredTimescale: 600)
+    )
+
+    let straight = try await analysedTimes(of: url, range: section)
+    let rebuilt = try await analysedTimes(of: url, range: section, rebuildingAfter: 10)
+
+    #expect(straight.count > 10)
+    #expect(rebuilt == straight)
+    #expect((rebuilt.last ?? .infinity) < 1.5)
+}
+
+@Test("Only a reader that was cut off is worth rebuilding")
+func recoverableReaderErrors() {
+    func avError(_ code: AVError.Code) -> NSError {
+        NSError(domain: AVFoundationErrorDomain, code: code.rawValue)
+    }
+
+    #expect(VideoProcessor.isRecoverable(avError(.operationInterrupted)))
+    #expect(VideoProcessor.isRecoverable(avError(.mediaServicesWereReset)))
+
+    // Broken, not interrupted: a new reader fails at the same place.
+    #expect(!VideoProcessor.isRecoverable(avError(.decodeFailed)))
+    #expect(!VideoProcessor.isRecoverable(avError(.fileFormatNotRecognized)))
+    #expect(!VideoProcessor.isRecoverable(nil))
+
+    // The same number from another domain means something else entirely.
+    let foreign = NSError(domain: NSCocoaErrorDomain, code: AVError.Code.operationInterrupted.rawValue)
+    #expect(!VideoProcessor.isRecoverable(foreign))
+}
+
 // MARK: - The pass's own tally
 
 @Test("Collecting a pass's results doesn't silence its own shot tally")
@@ -342,4 +469,66 @@ func pausingDoesNotFinishTheWindow() async throws {
 
     #expect(processor.isComplete)
     #expect(completion.isFinished)
+}
+
+// MARK: - Carrying on a saved pass
+
+@MainActor
+@Test("A pass saved part-way and carried on from disk analyses every frame once, with its settings and run")
+func savedPassCarriesOnFromDisk() async throws {
+    let url = try await makeTestClip(seconds: 2)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let asset = AVURLAsset(url: url)
+
+    var configuration = RunConfiguration()
+    configuration.players.detectionInterval = 4
+
+    // Straight through, for comparison.
+    let straight = try await VideoProcessor.create(videoAsset: asset, producesPreviewFrames: false, configuration: configuration)
+    var straightTimes: [Double] = []
+    straight.onFrameProcessed = { if let time = $0 { straightTimes.append(time) } }
+    straight.resume()
+    await straight.play()
+
+    // The first part, held the way leaving the app holds it.
+    let first = try await VideoProcessor.create(videoAsset: asset, producesPreviewFrames: false, configuration: configuration)
+    var times: [Double] = []
+    first.onFrameProcessed = { time in
+        if let time { times.append(time) }
+        if times.count == 23 { first.pause(.systemTriggered) }
+    }
+    first.resume()
+    await first.play()
+
+    let runID = UUID()
+    let snapshot = try #require(
+        await AnalysisSnapshot.capture(from: first, assetIdentifier: "clip", runID: runID, clipSeconds: 2)
+    )
+
+    let storeURL = FileManager.default.temporaryDirectory.appending(path: "carry-on-\(UUID().uuidString).snapshot")
+    defer { try? FileManager.default.removeItem(at: storeURL) }
+    let store = SnapshotStore(url: storeURL)
+    try store.save(snapshot)
+
+    guard case .ready(let loaded) = store.load() else {
+        Issue.record("the saved snapshot should load")
+        return
+    }
+    #expect(loaded.runID == runID)
+
+    // Carried on in a new processor, as after the app was ended — with a poster to show.
+    let second = try await loaded.makeProcessor(asset: asset)
+    #expect(second.currentFrame != nil)
+    #expect(second.tracker.currentConfiguration() == first.tracker.currentConfiguration())
+
+    second.producesPreviewFrames = false
+    second.onFrameProcessed = { if let time = $0 { times.append(time) } }
+    second.resume()
+    await second.play()
+
+    #expect(straightTimes.count > 23)
+    #expect(times == straightTimes)
+    #expect(second.isComplete)
+    #expect(second.frames == straight.frames)
+    #expect(second.tracker.snapshotState.frameCounter == straight.tracker.snapshotState.frameCounter)
 }

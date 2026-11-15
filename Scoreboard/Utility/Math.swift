@@ -63,6 +63,51 @@ struct MotionFit {
     }
 }
 
+/// Written by hand because the fits are tuples, which can't be coded or compared
+/// automatically. Needed to carry a shot in flight across a saved snapshot.
+extension MotionFit: Codable, Equatable {
+    private enum CodingKeys: String, CodingKey {
+        case px, py, referenceFrame, sampleCount, rmse
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let px = try container.decode([Double].self, forKey: .px)
+        let py = try container.decode([Double].self, forKey: .py)
+
+        guard px.count == 2, py.count == 3 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .px, in: container,
+                debugDescription: "Expected 2 linear and 3 quadratic coefficients."
+            )
+        }
+
+        self.init(
+            px: (px[0], px[1]),
+            py: (py[0], py[1], py[2]),
+            referenceFrame: try container.decode(Double.self, forKey: .referenceFrame),
+            sampleCount: try container.decode(Int.self, forKey: .sampleCount),
+            rmse: try container.decode(Double.self, forKey: .rmse)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode([px.0, px.1], forKey: .px)
+        try container.encode([py.0, py.1, py.2], forKey: .py)
+        try container.encode(referenceFrame, forKey: .referenceFrame)
+        try container.encode(sampleCount, forKey: .sampleCount)
+        try container.encode(rmse, forKey: .rmse)
+    }
+
+    static func == (lhs: MotionFit, rhs: MotionFit) -> Bool {
+        lhs.px == rhs.px && lhs.py == rhs.py
+            && lhs.referenceFrame == rhs.referenceFrame
+            && lhs.sampleCount == rhs.sampleCount
+            && lhs.rmse.bitPattern == rhs.rmse.bitPattern
+    }
+}
+
 /// Position on the fitted arc at an absolute frame.
 func predictPosition(fit: MotionFit, t: Double) -> (x: Double, y: Double) {
     let tau = fit.localTime(for: t)

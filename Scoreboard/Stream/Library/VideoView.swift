@@ -18,10 +18,18 @@ enum AssetState {
 struct VideoView: View {
     @Environment(\.dismiss) var dismiss
 
+    /// Whether the app is on screen. A pass can't run in the background, so it is held
+    /// while the app is away and picked up again on return.
+    @Environment(\.scenePhase) private var scenePhase
+
     /// For handing over to the dashboard once a run is saved. Absent in previews.
     @Environment(AppNavigation.self) private var navigation: AppNavigation?
     
-    @State var asset: AVURLAsset?
+    /// A pass saved to finish later, to carry on instead of picking a video. Nil for a
+    /// new analysis.
+    var continuing: AnalysisSnapshot? = nil
+
+    @State var asset: AVAsset?
     @State var assetIdentifier: String?
     @State var videoProcessor: VideoProcessor?
 
@@ -43,6 +51,22 @@ struct VideoView: View {
 
     /// Saved analysis and corrections for this video.
     @State var store = ShotStore()
+
+    /// Where this pass is saved part-way, if iOS ends the app while it's away — see
+    /// `AnalysisSnapshot`.
+    @State var snapshotStore = SnapshotStore()
+
+    /// Whether this pass has saved a snapshot that is still on disk, so resuming or
+    /// finishing knows there is one to remove.
+    @State var hasSavedSnapshot = false
+
+    /// Set once the pass has been saved to finish later, so closing doesn't also save it
+    /// as a finished run — it stays in progress until it is carried on.
+    @State var savedForLater = false
+    @State var showSaveForLaterFailed = false
+
+    /// Why the video of a saved pass couldn't be opened, while that is being said.
+    @State var missingVideo: VideoLibrary.LookupFailure?
     @State var truth: GroundTruthDocument?
 
     /// Identity of the analysis pass in progress, so repeated saves update one run.
@@ -188,10 +212,11 @@ struct VideoView: View {
         // seconds spent deciding shouldn't have been wasted.
         .alert("Stop analysing?", isPresented: $showDismissConfirmation) {
             Button("Keep analysing", role: .cancel) { }
+            Button("Save and complete later") { saveForLater() }
             Button("Stop and save", role: .destructive) {
                 // Stopped first, so no frame is moving the identities on while they are
                 // re-solved.
-                videoProcessor?.playback = .pause
+                videoProcessor?.pause(.userInitiated)
                 finishAnalysis { close() }
             }
         } message: {
@@ -200,17 +225,26 @@ struct VideoView: View {
         .sheet(isPresented: $showLibrary) {
             VideoPicker(
                 isPresented: $showLibrary,
-                selectedAsset: $asset,
+                // The picker hands back a file; a saved pass comes back as whatever Photos
+                // gives, so `asset` is the broader type.
+                selectedAsset: Binding(get: { asset as? AVURLAsset }, set: { asset = $0 }),
                 assetIdentifier: $assetIdentifier,
                 assetState: $assetState
             )
         }
         .onAppear(perform: {
             // TEMP-NOLIB
-            if asset == nil { showLibrary = true }
+            if asset == nil, continuing == nil { showLibrary = true }
         })
+        .task { await openSavedPass() }
         .task(id: asset) {
             guard let asset else { return }
+
+            if let continuing {
+                await carryOn(continuing, with: asset)
+                return
+            }
+
             assetState = .processing
             do {
                 let processor = try await VideoProcessor.create(videoAsset: asset)
@@ -278,6 +312,23 @@ struct VideoView: View {
                 assetState = .failed
                 print("error \(error.localizedDescription)")
             }
+        }
+        .alert(
+            "Couldn't find the video",
+            isPresented: Binding(get: { missingVideo != nil }, set: { if !$0 { missingVideo = nil } })
+        ) {
+            Button("Delete Saved Analysis", role: .destructive) {
+                snapshotStore.delete()
+                dismiss()
+            }
+            Button("Keep It", role: .cancel) { dismiss() }
+        } message: {
+            Text(missingVideoMessage)
+        }
+        .alert("Couldn't save for later", isPresented: $showSaveForLaterFailed) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("The analysis is still here. Carry on, or stop and save what's been found so far.")
         }
         .alert("Already analysed", isPresented: $showExistingAnalysisAlert) {
             Button("Analyse again") { }
@@ -349,7 +400,37 @@ struct VideoView: View {
                 FinishingAnalysisOverlay(step: finishingStep)
             }
         }
-        .onDisappear { saveRun() }
+        .keepsScreenAwake(isAnalysing)
+        .onChange(of: scenePhase) { _, phase in
+            // Only a pass that has been started has anything to hold or pick up again.
+            guard hasStartedAnalysis, let videoProcessor else { return }
+
+            switch ScenePause.action(
+                isActive: phase == .active,
+                playback: videoProcessor.playback,
+                reason: videoProcessor.pauseReason
+            ) {
+            case .pause: videoProcessor.pause(.systemTriggered)
+            case .resume: resume(videoProcessor)
+            case .none: break
+            }
+
+            // The app can be suspended from here, and ended while suspended without a
+            // word, so this is the last moment to keep what the pass has learnt.
+            if phase == .background { saveSnapshot(of: videoProcessor) }
+        }
+        .onDisappear {
+            // A pass saved to finish later isn't finished: it stays as the analysis in
+            // progress, not a run on the dashboard.
+            if !savedForLater { saveRun() }
+        }
+    }
+
+    /// Whether frames are being worked through, or the pass is being wrapped up. Locking
+    /// mid-way would send the app to the background, where neither can carry on. A pass
+    /// the user paused can lock like anything else.
+    var isAnalysing: Bool {
+        finishingStep != nil || (hasStartedAnalysis && videoProcessor?.playback == .resume)
     }
 
     /// The controls along the bottom of the analysis view.
@@ -400,7 +481,7 @@ struct VideoView: View {
             // noticed, so the fix is offered right here — spelled out, because a bare
             // "no entry" glyph doesn't say what it would do to the analysis.
             Button {
-                withAnimation { videoProcessor.playback = .pause }
+                withAnimation { videoProcessor.pause(.userInitiated) }
                 showZoneEditor = true
             } label: {
                 Label(blockedAreasLabel, systemImage: "nosign")
@@ -479,7 +560,7 @@ struct VideoView: View {
         if videoProcessor.playback == .pause {
             resume(videoProcessor)
         } else {
-            withAnimation { videoProcessor.playback = .pause }
+            withAnimation { videoProcessor.pause(.userInitiated) }
         }
     }
 
@@ -489,17 +570,157 @@ struct VideoView: View {
     }
 
     func resume(_ videoProcessor: VideoProcessor) {
+        // Carrying on from memory: what was saved for a restart is now behind.
+        discardSnapshot()
+
         // The clock starts at the first resume and keeps running across pauses, so the
         // rate shown is the rate of the whole pass rather than of the last burst.
         if analysisStartedAt == nil { analysisStartedAt = Date() }
 
-        withAnimation { videoProcessor.playback = .resume }
+        withAnimation { videoProcessor.resume() }
 
         Task.detached(priority: .userInitiated) {
             await videoProcessor.play()
         }
     }
 
+
+    /// Save what the pass has learnt so far, in case iOS ends the app before it comes
+    /// back. Only for a pass that has started and isn't finished or being wrapped up.
+    ///
+    /// Gathered on the main thread once the frame loop has stopped, then compressed and
+    /// written off it — inside a background task, since the app is on its way out.
+    func saveSnapshot(of videoProcessor: VideoProcessor) {
+        guard hasStartedAnalysis, finishingStep == nil, !videoProcessor.isComplete,
+              let assetIdentifier else { return }
+
+        let window = BackgroundTaskWindow(name: "Save analysis in progress")
+        let snapshotStore = snapshotStore
+        Task {
+            defer { window.end() }
+
+            guard let snapshot = await AnalysisSnapshot.capture(
+                from: videoProcessor,
+                assetIdentifier: assetIdentifier,
+                runID: currentRunID,
+                capturedAt: capturedAt,
+                clipSeconds: clipDuration
+            ) else { return }
+
+            let saved = await Task.detached(priority: .userInitiated) {
+                (try? snapshotStore.save(snapshot)) != nil
+            }.value
+            if saved { hasSavedSnapshot = true }
+        }
+    }
+
+    /// Save the pass to finish later, then leave for the dashboard, where it shows as the
+    /// analysis in progress. Stays put and says so if it couldn't be saved — closing then
+    /// would lose the pass without a word.
+    func saveForLater() {
+        guard let videoProcessor, let assetIdentifier else { return }
+
+        videoProcessor.pause(.userInitiated)
+        finishingStep = "Saving for later…"
+
+        let snapshotStore = snapshotStore
+        Task {
+            var saved = false
+            if let snapshot = await AnalysisSnapshot.capture(
+                from: videoProcessor,
+                assetIdentifier: assetIdentifier,
+                runID: currentRunID,
+                capturedAt: capturedAt,
+                clipSeconds: clipDuration
+            ) {
+                saved = await Task.detached(priority: .userInitiated) {
+                    (try? snapshotStore.save(snapshot)) != nil
+                }.value
+            }
+
+            finishingStep = nil
+            guard saved else {
+                showSaveForLaterFailed = true
+                return
+            }
+
+            hasSavedSnapshot = true
+            savedForLater = true
+            dismiss()
+            navigation?.showInProgressAnalysis()
+        }
+    }
+
+    /// For a saved pass: find its video in Photos. Setting `asset` carries on from there.
+    func openSavedPass() async {
+        guard let continuing, asset == nil else { return }
+
+        assetIdentifier = continuing.assetIdentifier
+        assetState = .loading
+        do {
+            asset = try await VideoLibrary.asset(for: continuing.assetIdentifier)
+        } catch let failure as VideoLibrary.LookupFailure {
+            missingVideo = failure
+        } catch {
+            missingVideo = .assetMissing
+        }
+    }
+
+    /// Rebuild a saved pass and set it running again: no pre-flight scan, since the rim is
+    /// in what was saved, and no start card, since the format is too.
+    func carryOn(_ snapshot: AnalysisSnapshot, with asset: AVAsset) async {
+        assetState = .processing
+        do {
+            let processor = try await snapshot.makeProcessor(asset: asset)
+            videoProcessor = processor
+            frameProvider = ShotFrameProvider(asset: asset)
+
+            clipDuration = snapshot.clipSeconds
+            capturedAt = snapshot.capturedAt
+            currentRunID = snapshot.runID
+            gameFormat = snapshot.tracker.identity?.record.format
+
+            // What the user has told us about the video, as on any pass. The rim isn't
+            // set from it: the saved pass already has the rim it was judging against.
+            let assetIdentifier = snapshot.assetIdentifier
+            let stored = store.loadTruth(for: assetIdentifier)
+            truth = stored
+            plan = store.loadPlan(for: assetIdentifier)
+            processor.tracker.setExclusionZones(stored.exclusions)
+            processor.tracker.gameState.applyStoredTruth(stored.shots)
+            processor.tracker.gameState.onVerdictChanged = { [assetIdentifier] attempt in
+                recordVerdict(for: attempt, assetIdentifier: assetIdentifier)
+            }
+
+            // The file is this pass's now: resuming removes it, and leaving again saves
+            // a new one.
+            hasSavedSnapshot = true
+            hasStartedAnalysis = true
+            assetState = .ready
+            resume(processor)
+        } catch {
+            assetState = .failed
+            print("error \(error.localizedDescription)")
+        }
+    }
+
+    var missingVideoMessage: String {
+        switch missingVideo {
+        case .notAuthorized:
+            return "Scoreboard can't see your videos. Allow access in Settings to carry on this analysis."
+        default:
+            return "It may have been removed from this device, or be in iCloud and not available right now."
+        }
+    }
+
+    /// Remove the saved snapshot, when this pass made one.
+    func discardSnapshot() {
+        guard hasSavedSnapshot else { return }
+        hasSavedSnapshot = false
+
+        let snapshotStore = snapshotStore
+        Task.detached(priority: .utility) { snapshotStore.delete() }
+    }
 
     var existingAnalysisMessage: String {
         let count = existingRuns.count
@@ -535,6 +756,9 @@ struct VideoView: View {
             next()
             return
         }
+
+        // Finishing either way, so there is nothing left to carry on.
+        discardSnapshot()
 
         finishingStep = "Re-checking who's who…"
         Task {

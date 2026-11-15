@@ -114,7 +114,7 @@ func ellipseBallClearance(
 struct RimTracker {
 
     /// Where the current geometry came from.
-    enum Source: Equatable {
+    enum Source: Codable, Equatable {
         case detected
         /// Positioned by the user. Outranks the detector permanently.
         case userPlaced
@@ -232,5 +232,29 @@ struct RimTracker {
         geometry = nil
         source = .detected
         lastUpdatedFrame = nil
+    }
+}
+
+// MARK: - Snapshot
+
+extension RimTracker {
+    /// The samples and the rim they settled on. The limits aren't here: the tracker it is
+    /// restored into is built with them.
+    struct State: Codable, Equatable {
+        var samples: [CGRect]
+        var geometry: HoopGeometry?
+        var source: Source
+        var lastUpdatedFrame: Int?
+    }
+
+    var snapshotState: State {
+        State(samples: samples, geometry: geometry, source: source, lastUpdatedFrame: lastUpdatedFrame)
+    }
+
+    mutating func restore(from snapshot: State) {
+        samples = snapshot.samples
+        geometry = snapshot.geometry
+        source = snapshot.source
+        lastUpdatedFrame = snapshot.lastUpdatedFrame
     }
 }

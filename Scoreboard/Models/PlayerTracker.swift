@@ -9,9 +9,9 @@ import Foundation
 import LASwift
 
 /// One player the tracker is following.
-struct PlayerTrack: Identifiable, Equatable {
+struct PlayerTrack: Identifiable, Equatable, Codable {
 
-    enum State: Equatable {
+    enum State: Codable, Equatable {
         /// Seen, but not yet on enough consecutive passes to be trusted. Not drawn.
         case tentative
         /// Matched on the most recent pass.
@@ -335,5 +335,50 @@ extension PlayerTracker.Config {
         passesToConfirm = try container.decode(.passesToConfirm, or: defaults.passesToConfirm)
         maxCoastFrames = try container.decode(.maxCoastFrames, or: defaults.maxCoastFrames)
         kalman = try container.decode(.kalman, or: defaults.kalman)
+    }
+}
+
+// MARK: - Snapshot
+
+extension PlayerTracker {
+    /// The tracks, their filters and the counts. The config isn't here: the tracker it is
+    /// restored into is built with it.
+    struct State: Codable, Equatable {
+        var tracks: [PlayerTrack]
+        var filters: [Int: BoxKalmanFilter.State]
+        var nextID: Int
+        var lastFrame: Int?
+        var tracksConfirmed: Int
+        var endedTrackFrames: Int
+        var endedTracks: Int
+    }
+
+    var snapshotState: State {
+        State(
+            tracks: tracks,
+            filters: filters.mapValues(\.snapshotState),
+            nextID: nextID,
+            lastFrame: lastFrame,
+            tracksConfirmed: tracksConfirmed,
+            endedTrackFrames: endedTrackFrames,
+            endedTracks: endedTracks
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off. Call before the first frame.
+    mutating func restore(from snapshot: State) {
+        tracks = snapshot.tracks
+        filters = snapshot.filters.reduce(into: [:]) { filters, entry in
+            // Built the normal way, with this tracker's config, then given the saved
+            // estimate — the box it starts from is replaced straight away.
+            var filter = BoxKalmanFilter(box: .zero, config: config.kalman)
+            filter.restore(from: entry.value)
+            filters[entry.key] = filter
+        }
+        nextID = snapshot.nextID
+        lastFrame = snapshot.lastFrame
+        tracksConfirmed = snapshot.tracksConfirmed
+        endedTrackFrames = snapshot.endedTrackFrames
+        endedTracks = snapshot.endedTracks
     }
 }

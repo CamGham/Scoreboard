@@ -82,42 +82,38 @@ struct ShotTimelineView: View {
     @State private var replaying: ShotAttempt?
 
     var body: some View {
-        NavigationStack {
-            List {
-                totalsSection
-                
-                if gameState.accuracy.reviewed > 0 {
-                    detectorAccuracySection
-                }
-                
-                if ballStats != nil {
-                    ballDetectionSection
-                }
-
-                if let playerStats, playerStats.sampledFrames > 0 {
-                    playerDetectionSection(playerStats)
-                }
-
-                if let appearance = playerStats?.tracking?.appearance, appearance.comparisons > 0 {
-                    appearanceSection(appearance)
-                }
-
-                if let identities = gameState.identities, let revisions = identities.revisions {
-                    revisionsSection(revisions, record: identities)
-                }
-
-                if let identities = gameState.identities, !identities.checks.isEmpty {
-                    identityChecksSection(identities)
-                }
-
-                shotsSection
-                
-                if !gameState.abandonedAttempts.isEmpty {
-                    unresolvedSection
-                }
+        List {
+            totalsSection
+            
+            if gameState.accuracy.reviewed > 0 {
+                detectorAccuracySection
             }
-            .navigationTitle("Shot timeline")
-            .navigationBarTitleDisplayMode(.inline)
+            
+            if ballStats != nil {
+                ballDetectionSection
+            }
+
+            if let playerStats, playerStats.sampledFrames > 0 {
+                playerDetectionSection(playerStats)
+            }
+
+            if let appearance = playerStats?.tracking?.appearance, appearance.comparisons > 0 {
+                appearanceSection(appearance)
+            }
+
+            if let identities = gameState.identities, let revisions = identities.revisions {
+                revisionsSection(revisions, record: identities)
+            }
+
+            if let identities = gameState.identities, !identities.checks.isEmpty {
+                identityChecksSection(identities)
+            }
+
+            shotsSection
+            
+            if !gameState.abandonedAttempts.isEmpty {
+                unresolvedSection
+            }
         }
         .fullScreenCover(item: $replaying) { attempt in
             if let asset {

@@ -190,3 +190,47 @@ final class ShotTracker {
         onSnapshot?(snapshot)
     }
 }
+
+// MARK: - Snapshot
+
+extension ShotTracker {
+    /// Everything that changes while a pass runs. Blocked areas and the callbacks aren't
+    /// here: they are set on the tracker it is restored into, as on any pass.
+    struct State: Codable, Equatable {
+        var detector: ShotDetector.State
+        var rim: RimTracker.State
+
+        /// Overlay pictures published so far. Carried on so the next one isn't numbered
+        /// as if it came first.
+        var sequence: Int
+
+        var currentFrameID: Int
+        var currentFrameTime: Double?
+
+        /// The last frame's ball, not yet handed to the detector — that only happens when
+        /// the next frame opens. Leaving it out would lose one sighting.
+        var pendingBall: BallObservation?
+    }
+
+    /// Read only between frames, while nothing is processing one.
+    var snapshotState: State {
+        State(
+            detector: detector.snapshotState,
+            rim: rimTracker.snapshotState,
+            sequence: sequence,
+            currentFrameID: currentFrameID,
+            currentFrameTime: currentFrameTime,
+            pendingBall: pendingBall
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off. Call before the first frame.
+    func restore(from snapshot: State) {
+        detector.restore(from: snapshot.detector)
+        rimTracker.restore(from: snapshot.rim)
+        sequence = snapshot.sequence
+        currentFrameID = snapshot.currentFrameID
+        currentFrameTime = snapshot.currentFrameTime
+        pendingBall = snapshot.pendingBall
+    }
+}

@@ -279,3 +279,28 @@ func gameStateCarriesPossession() {
     state.reset()
     #expect(state.possession == nil)
 }
+
+// MARK: - Snapshot
+
+@Test("A possession tracker restored mid-switch finishes the switch as the original does")
+func possessionTrackerResumesMidStreak() throws {
+    var original = oneHolding()
+    feed(&original, frames: 4...10, ball: withOne)
+
+    // Two sightings with player 2: a switch under way, one short of happening.
+    feed(&original, frames: 11...12, ball: withTwo)
+
+    let saved = try snapshotRoundTrip(original.snapshotState)
+    #expect(saved.holderID == 1)
+    #expect(saved.streak?.playerID == 2)
+
+    var restored = PossessionTracker()
+    restored.restore(from: saved)
+
+    feed(&original, frames: 13...20, ball: withTwo)
+    feed(&restored, frames: 13...20, ball: withTwo)
+
+    #expect(original.holderID == 2)
+    #expect(restored.record == original.record)
+    #expect(restored.snapshotState == original.snapshotState)
+}

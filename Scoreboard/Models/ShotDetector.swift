@@ -674,3 +674,43 @@ struct ShotDetector {
         }
     }
 }
+
+// MARK: - Snapshot
+
+extension ShotDetector {
+    /// Everything that changes while a pass runs, for carrying a pass on after the app
+    /// was closed. The config isn't here: the detector it is restored into is built with
+    /// it, the way any detector is.
+    struct State: Codable, Equatable {
+        var history: [BallObservation]
+        var currentAttempt: ShotAttempt?
+        var ballState: BallState
+        var currentFit: MotionFit?
+        var predictedCrossingFrame: Double?
+        var cooldownUntilFrame: Int?
+        var framesBelowRim: Int
+    }
+
+    var snapshotState: State {
+        State(
+            history: history,
+            currentAttempt: currentAttempt,
+            ballState: state,
+            currentFit: currentFit,
+            predictedCrossingFrame: predictedCrossingFrame,
+            cooldownUntilFrame: cooldownUntilFrame,
+            framesBelowRim: framesBelowRim
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off.
+    mutating func restore(from snapshot: State) {
+        history = snapshot.history
+        currentAttempt = snapshot.currentAttempt
+        state = snapshot.ballState
+        currentFit = snapshot.currentFit
+        predictedCrossingFrame = snapshot.predictedCrossingFrame
+        cooldownUntilFrame = snapshot.cooldownUntilFrame
+        framesBelowRim = snapshot.framesBelowRim
+    }
+}

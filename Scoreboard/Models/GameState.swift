@@ -82,6 +82,10 @@ final class GameState {
     /// Frame of the most recent made basket, for a score flash in the UI.
     private(set) var lastMadeFrame: Int?
 
+    /// Shot events handled so far — see `VisionTracker.eventsSent`, which a snapshot
+    /// waits for this to catch up with. Not drawn, so not observed.
+    @ObservationIgnored private(set) var eventsHandled = 0
+
     /// Who held the ball, frame by frame, for drawing in replay.
     ///
     /// Handed over once — when an analysis finishes, or a saved run is loaded — rather
@@ -133,6 +137,8 @@ final class GameState {
     }
 
     func handle(_ event: ShotEvent) {
+        eventsHandled += 1
+
         switch event {
         case .attemptStarted, .rimContact:
             break
@@ -305,5 +311,37 @@ final class GameState {
         possession = nil
         identities = nil
         positions = nil
+    }
+}
+
+// MARK: - Snapshot
+
+extension GameState {
+    /// The shots found so far. The user's rulings aren't here — they are reloaded from
+    /// the video's saved data, as on any pass — and neither is the overlay picture, which
+    /// the next frame redraws.
+    struct State: Codable, Equatable {
+        var shotTimeline: [ShotAttempt]
+        var abandonedAttempts: [ShotAttempt]
+        var lastMadeFrame: Int?
+    }
+
+    var snapshotState: State {
+        State(
+            shotTimeline: shotTimeline,
+            abandonedAttempts: abandonedAttempts,
+            lastMadeFrame: lastMadeFrame
+        )
+    }
+
+    func restore(from snapshot: State) {
+        shotTimeline = snapshot.shotTimeline
+        abandonedAttempts = snapshot.abandonedAttempts
+        lastMadeFrame = snapshot.lastMadeFrame
+
+        // Starts counting overlay pictures again from nothing, so the restored shot
+        // tracker's next one — numbered on from where it left off — is never dropped
+        // as stale.
+        self.snapshot = GameSnapshot()
     }
 }

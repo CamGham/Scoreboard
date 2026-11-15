@@ -25,7 +25,7 @@ struct PlayerDetection: Equatable {
 
 /// The accepted player boxes from one sampled frame, kept so the next sample can be
 /// checked against it.
-struct PlayerSample: Equatable {
+struct PlayerSample: Codable, Equatable {
     let frameID: Int
     let boxes: [CGRect]
 }

@@ -764,3 +764,30 @@ func resolvedRecordLeavesGoodLabels() {
     #expect(resolved.revisions == [])
     #expect(resolved.segments == tracker.record.segments)
 }
+
+// MARK: - Snapshot
+
+@Test("An identity tracker restored mid-touch settles the touch as the original does")
+func identityTrackerResumesMidTouch() throws {
+    var original = touchedOneOnOne()
+
+    let saved = try snapshotRoundTrip(original.snapshotState)
+    #expect(!saved.groups.isEmpty, "the players are still grouped, waiting for their check")
+
+    // A fresh tracker makes up its own player ids; the restored one must take the saved ones.
+    var restored = IdentityTracker(format: .oneOnOne)
+    restored.restore(from: saved)
+    #expect(restored.record.players == original.record.players)
+
+    // Apart again, each track on the other person — the check swaps them.
+    let apart = { (frame: Int) in [track(1, at: 0.7, first: 1, seen: frame), track(2, at: 0.3, first: 1, seen: frame)] }
+    for frame in 26...32 {
+        original.update(frameID: frame, timeSeconds: time(frame), tracks: apart(frame), samples: [1: personB, 2: personA])
+        restored.update(frameID: frame, timeSeconds: time(frame), tracks: apart(frame), samples: [1: personB, 2: personA])
+    }
+
+    #expect(original.summary.swaps == 1)
+    #expect(restored.record == original.record)
+    #expect(restored.summary == original.summary)
+    #expect(restored.snapshotState == original.snapshotState)
+}

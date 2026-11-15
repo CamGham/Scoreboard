@@ -313,8 +313,9 @@ struct IdentityTracker {
     /// Samples, tracklets, and how much each cue varies — see `AppearanceSeparation`.
     private(set) var appearance: AppearanceSeparation
 
-    /// What is known about each player, in the same order as `record.players`.
-    private struct Slot {
+    /// What is known about each player, in the same order as `record.players`. Internal
+    /// rather than private only so a snapshot can hold it.
+    struct Slot: Codable, Equatable {
         /// The track that is this player now.
         var owner: Int?
 
@@ -335,7 +336,8 @@ struct IdentityTracker {
     private var unassigned: Set<Int> = []
 
     /// Players who touched and haven't been checked yet.
-    private struct Group {
+    /// Internal rather than private only so a snapshot can hold it.
+    struct Group: Codable, Equatable {
         var players: Set<Int>
         var startFrame: Int
         var startTime: Double?
@@ -965,5 +967,71 @@ extension IdentityTracker.Config {
         checkTimeoutFrames = try container.decode(.checkTimeoutFrames, or: defaults.checkTimeoutFrames)
         appearance = try container.decode(.appearance, or: defaults.appearance)
         resolver = try container.decode(.resolver, or: defaults.resolver)
+    }
+}
+
+// MARK: - Snapshot
+
+extension IdentityTracker {
+    /// Which player a track holds, and its segment. The live tracker keeps this as a
+    /// tuple, which can't be saved.
+    struct Assignment: Codable, Equatable {
+        var player: Int
+        var segment: Int
+    }
+
+    /// Everything decided so far, and everything still waiting to be. The config isn't
+    /// here: the tracker it is restored into is built with it.
+    struct State: Codable, Equatable {
+        /// Includes the players' ids. Kept as they were: segments and possession refer to
+        /// them, and a tracker built afresh would make up new ones.
+        var record: IdentityRecord
+        var appearance: AppearanceSeparation.State
+        var slots: [Slot]
+        var assignments: [Int: Assignment]
+        var unassigned: Set<Int>
+
+        /// Touches still waiting for their check, each with the looks frozen before it.
+        var groups: [Group]
+
+        var relinks: Int
+        var endedUnassigned: Int
+        var checks: Int
+        var swaps: Int
+        var uncertain: Int
+        var currentTime: Double?
+    }
+
+    var snapshotState: State {
+        State(
+            record: record,
+            appearance: appearance.snapshotState,
+            slots: slots,
+            assignments: assignments.mapValues { Assignment(player: $0.player, segment: $0.segment) },
+            unassigned: unassigned,
+            groups: groups,
+            relinks: relinks,
+            endedUnassigned: endedUnassigned,
+            checks: checks,
+            swaps: swaps,
+            uncertain: uncertain,
+            currentTime: currentTime
+        )
+    }
+
+    /// Pick up exactly where `snapshot` left off. Call before the first frame.
+    mutating func restore(from snapshot: State) {
+        record = snapshot.record
+        appearance.restore(from: snapshot.appearance)
+        slots = snapshot.slots
+        assignments = snapshot.assignments.mapValues { (player: $0.player, segment: $0.segment) }
+        unassigned = snapshot.unassigned
+        groups = snapshot.groups
+        relinks = snapshot.relinks
+        endedUnassigned = snapshot.endedUnassigned
+        checks = snapshot.checks
+        swaps = snapshot.swaps
+        uncertain = snapshot.uncertain
+        currentTime = snapshot.currentTime
     }
 }
