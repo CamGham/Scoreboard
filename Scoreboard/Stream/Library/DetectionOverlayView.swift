@@ -29,7 +29,8 @@ struct DetectionOverlayView: View {
             PlayerTracksOverlay(
                 tracks: processor.tracker.playerTracks,
                 holderID: processor.tracker.ballHolderID,
-                shooterID: processor.tracker.gameState.currentAttempt?.shooter?.playerID
+                shooterID: processor.tracker.gameState.currentAttempt?.shooter?.playerID,
+                labels: processor.tracker.playerLabels
             )
 
             let gameState = processor.tracker.gameState
@@ -150,7 +151,7 @@ struct DetectionOverlayView: View {
 ///
 /// A coasting player — not matched on the latest pass, carried on its prediction — is
 /// drawn faded and dashed, so a box that is only a guess doesn't look like a sighting.
-/// Whoever has the ball is drawn orange.
+/// Whoever has the ball is drawn orange; a track that isn't anybody yet, grey.
 struct PlayerTracksOverlay: View {
     let tracks: [PlayerTrack]
 
@@ -161,13 +162,19 @@ struct PlayerTracksOverlay: View {
     /// the ball is theirs until someone else takes it.
     var shooterID: Int?
 
+    /// Which player each track is, by track id. Nil labels tracks by their own id, as
+    /// before identities; a track missing from it is shown as "?".
+    var labels: [Int: String]?
+
     var body: some View {
         GeometryReader { geometry in
             ForEach(tracks) { track in
                 let rect = viewRect(for: track.box, in: geometry.size)
                 let isCoasting = track.state == .coasting
                 let isFeatured = track.id == holderID || track.id == shooterID
-                let colour = (isFeatured ? Color.orange : Color.green)
+                let label = labels.map { $0[track.id] ?? "?" } ?? "P\(track.id)"
+                let isNobody = labels != nil && labels?[track.id] == nil
+                let colour = (isFeatured ? Color.orange : isNobody ? Color.gray : Color.green)
                     .opacity(isCoasting ? 0.45 : 1)
 
                 Rectangle()
@@ -178,7 +185,7 @@ struct PlayerTracksOverlay: View {
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
 
-                Text(track.id == shooterID ? "P\(track.id) · Shooter" : "P\(track.id)")
+                Text(track.id == shooterID ? "\(label) · Shooter" : label)
                     .font(.caption.bold())
                     .foregroundStyle(colour)
                     .position(x: rect.midX, y: rect.minY - 10)

@@ -68,6 +68,11 @@ struct ShotStore {
     }
 
     /// Headers for every run, so the run list needn't parse each one's trajectories.
+    /// Every player's position through a run: beside it, compressed, read only for replay.
+    private func positionsURL(for assetIdentifier: String, runID: UUID) -> URL {
+        runsDirectory(for: assetIdentifier).appending(path: "\(runID.uuidString).positions.lzfse")
+    }
+
     private func runIndexURL(for assetIdentifier: String) -> URL {
         runsDirectory(for: assetIdentifier).appending(path: "index.json")
     }
@@ -185,6 +190,9 @@ struct ShotStore {
                 try? fileManager.removeItem(
                     at: runURL(for: run.assetIdentifier, runID: stale.id)
                 )
+                try? fileManager.removeItem(
+                    at: positionsURL(for: run.assetIdentifier, runID: stale.id)
+                )
             }
             index = Array(index.prefix(retentionLimit))
         }
@@ -194,6 +202,7 @@ struct ShotStore {
 
     func deleteRun(_ runID: UUID, for assetIdentifier: String) throws {
         try? fileManager.removeItem(at: runURL(for: assetIdentifier, runID: runID))
+        try? fileManager.removeItem(at: positionsURL(for: assetIdentifier, runID: runID))
 
         var index: [RunMetadata] = read(runIndexURL(for: assetIdentifier)) ?? []
         index.removeAll { $0.id == runID }
@@ -280,6 +289,27 @@ struct ShotStore {
                 latestRunID: stored.first?.id
             )
         )
+    }
+
+    // MARK: Player positions
+
+    /// Store where every player was through a run, compressed. Separate from the run so
+    /// opening a run for its shots doesn't decode thousands of boxes it won't draw.
+    func savePositions(_ record: PlayerPositionRecord, for assetIdentifier: String, runID: UUID) throws {
+        let url = positionsURL(for: assetIdentifier, runID: runID)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let json = try JSONEncoder().encode(record)
+        let compressed = try (json as NSData).compressed(using: .lzfse) as Data
+        try compressed.write(to: url, options: .atomic)
+    }
+
+    /// Where every player was through a run, or nil for a run saved without positions.
+    func loadPositions(for assetIdentifier: String, runID: UUID) -> PlayerPositionRecord? {
+        guard let compressed = try? Data(contentsOf: positionsURL(for: assetIdentifier, runID: runID)),
+              let json = try? (compressed as NSData).decompressed(using: .lzfse) as Data
+        else { return nil }
+        return try? JSONDecoder().decode(PlayerPositionRecord.self, from: json)
     }
 
     // MARK: IO

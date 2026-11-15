@@ -13,7 +13,7 @@ struct PossessionFrame: Codable, Equatable {
     let timeSeconds: Double?
 
     /// The holder's `PlayerTrack` id. Only meaningful within the run that produced it,
-    /// and a track is not yet a person: when a track breaks, so does this.
+    /// and a track is not a person: the run's `IdentityRecord` says who it was.
     let playerID: Int
 
     /// The holder's box on this frame, in Vision normalized space.
@@ -333,5 +333,18 @@ struct PossessionTracker {
         if forgettingLastHolder {
             lastHolderID = nil
         }
+    }
+}
+
+extension PossessionTracker.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        reachUp = try container.decode(.reachUp, or: defaults.reachUp)
+        reachSide = try container.decode(.reachSide, or: defaults.reachSide)
+        reachDown = try container.decode(.reachDown, or: defaults.reachDown)
+        sightingsToSwitch = try container.decode(.sightingsToSwitch, or: defaults.sightingsToSwitch)
+        maxUnseenFrames = try container.decode(.maxUnseenFrames, or: defaults.maxUnseenFrames)
     }
 }

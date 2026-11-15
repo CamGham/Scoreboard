@@ -189,9 +189,14 @@ struct AnalysisReviewView: View {
                 ZStack(alignment: .topLeading) {
                     PlayerLayerView(player: player.player)
 
-                    // Unlike the shot path, possession matters between shots too, so the
-                    // ring is drawn the whole way through.
-                    PossessionRingOverlay(possession: gameState.possession, time: player.currentTime)
+                    // Unlike the shot path, players matter between shots too, so their
+                    // rings are drawn the whole way through.
+                    PlayerRingsOverlay(
+                        positions: gameState.positions,
+                        possession: gameState.possession,
+                        identities: gameState.identities,
+                        time: player.currentTime
+                    )
                         .frame(width: content.width, height: content.height)
                         .offset(x: content.minX, y: content.minY)
 

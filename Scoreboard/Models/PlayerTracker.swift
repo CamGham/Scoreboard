@@ -21,7 +21,8 @@ struct PlayerTrack: Identifiable, Equatable {
         case coasting
     }
 
-    /// Stable for as long as the track lives. Shown as "P\(id)".
+    /// Stable for as long as the track lives. Shown as "P\(id)" when the run has no
+    /// identities; otherwise `IdentityTracker` says which player it is.
     let id: Int
 
     /// Current estimate: the detection's box smoothed on a matched frame, the predicted
@@ -88,6 +89,9 @@ struct PlayerTracker {
         /// Frames a confirmed track may go unmatched before it is dropped. About a second
         /// at 30 fps — long enough to carry a player through a screen.
         var maxCoastFrames = 30
+
+        /// How each track's box is smoothed and predicted — see `BoxKalmanFilter`.
+        var kalman = BoxKalmanFilter.Config()
     }
 
     let config: Config
@@ -228,7 +232,7 @@ struct PlayerTracker {
         let id = nextID
         nextID += 1
 
-        let filter = BoxKalmanFilter(box: detection.boundingBox)
+        let filter = BoxKalmanFilter(box: detection.boundingBox, config: config.kalman)
         filters[id] = filter
 
         var track = PlayerTrack(
@@ -316,5 +320,20 @@ struct PlayerTracker {
         result.unmatchedDetections = detections.indices.filter { !usedColumns.contains($0) }
 
         return result
+    }
+}
+
+extension PlayerTracker.Config {
+    // Lenient, so tracking stats saved before a setting existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        detectionInterval = try container.decode(.detectionInterval, or: defaults.detectionInterval)
+        highConfidence = try container.decode(.highConfidence, or: defaults.highConfidence)
+        lowConfidence = try container.decode(.lowConfidence, or: defaults.lowConfidence)
+        minimumOverlap = try container.decode(.minimumOverlap, or: defaults.minimumOverlap)
+        passesToConfirm = try container.decode(.passesToConfirm, or: defaults.passesToConfirm)
+        maxCoastFrames = try container.decode(.maxCoastFrames, or: defaults.maxCoastFrames)
+        kalman = try container.decode(.kalman, or: defaults.kalman)
     }
 }

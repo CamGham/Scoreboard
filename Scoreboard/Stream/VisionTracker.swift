@@ -33,6 +33,10 @@ class VisionTracker {
     /// `playerTracks`. Nil while the ball is loose or nobody has it.
     var ballHolderID: Int?
 
+    /// Which player each of `playerTracks` is, by track id, published alongside them.
+    /// Nil when no format was picked; a track missing from it has nobody yet.
+    var playerLabels: [Int: String]?
+
     /// Main-actor game state for the UI to read.
     let gameState = GameState()
 
@@ -54,8 +58,20 @@ class VisionTracker {
     )
     @ObservationIgnored private var previousPlayerSample: PlayerSample?
 
+    /// Where every player track was on each frame with a detection pass, for drawing them
+    /// in replay — see `PlayerPositionRecord`.
+    @ObservationIgnored private(set) var positions = PlayerPositionRecord()
+
     /// Decides who has the ball on every frame — see `PossessionTracker`.
     @ObservationIgnored private(set) var possessionTracker = PossessionTracker()
+
+    /// Puts the player tracks onto the people on court — see `IdentityTracker`. Nil until
+    /// a format is picked, which leaves tracks as they were.
+    @ObservationIgnored private(set) var identityTracker: IdentityTracker?
+
+    /// The identities corrected with the whole clip in view, once it has ended. Nil until
+    /// then — see `finishIdentities()`.
+    @ObservationIgnored private var resolvedIdentities: IdentityRecord?
 
     /// Presentation time of the frame open now, for stamping what is recorded on it.
     @ObservationIgnored private var currentFrameTime: Double?
@@ -63,13 +79,20 @@ class VisionTracker {
     /// Frame the rim was last sampled on.
     @ObservationIgnored private var lastRimSampleFrame: Int?
 
-    /// Frames between rim samples — about a second at 30 fps.
-    ///
-    /// Player passes run every few frames, and every one of them sees the rim. Feeding
-    /// them all would fill the rim's 31-sample window from the opening seconds, which is
-    /// exactly when it is most often screened by players. Spacing the samples spreads the
-    /// window across the clip instead.
-    static let rimSampleInterval = 30
+    struct Config: Codable, Equatable {
+        /// Frames between rim samples — about a second at 30 fps.
+        ///
+        /// Player passes run every few frames, and every one of them sees the rim. Feeding
+        /// them all would fill the rim's 31-sample window from the opening seconds, which is
+        /// exactly when it is most often screened by players. Spacing the samples spreads the
+        /// window across the clip instead.
+        var rimSampleInterval = 30
+    }
+
+    let config: Config
+
+    /// Reads players' colours for the identity checks — see `AppearanceSampler`.
+    @ObservationIgnored let appearanceSampler: AppearanceSampler
 
     /// Whether anything is drawing the overlay. See `setOverlayUpdates(_:)`.
     @ObservationIgnored private var publishesOverlay = true
@@ -79,7 +102,9 @@ class VisionTracker {
     /// detector, and a decoy could still pull the moving crop onto itself.
     private var pendingExclusionZones: [ExclusionZone] = []
 
-    init() {
+    init(config: Config = Config(), appearanceSampler: AppearanceSampler = AppearanceSampler()) {
+        self.config = config
+        self.appearanceSampler = appearanceSampler
         print("DEBUG: TRACKER CREATED")
 
         setOverlayUpdates(true)
@@ -200,6 +225,10 @@ class VisionTracker {
 
         let visible = trackPlayers(fullFrame.map { (PlayerDetection.players(in: $0.results), $0.source) })
 
+        if identityTracker != nil {
+            updateIdentities(of: visible, pixelBuffer: pixelBuffer, orientation: orientation)
+        }
+
         // After the players, so the ball is judged against where they are on this frame.
         let holder = updatePossession(
             ball: found.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) },
@@ -207,9 +236,11 @@ class VisionTracker {
         )
 
         if publishesOverlay {
+            let labels = identityTracker?.labels(for: visible)
             Task { @MainActor in
                 self.playerTracks = visible
                 self.ballHolderID = holder
+                self.playerLabels = labels
             }
         }
 
@@ -239,6 +270,28 @@ class VisionTracker {
     /// Who held the ball, frame by frame, for saving with the run.
     var possession: PossessionRecord { possessionTracker.record }
 
+    /// Which track was which player, for saving with the run: corrected for the whole clip
+    /// once it has ended, as decided live until then. Nil when no format was picked.
+    var identities: IdentityRecord? { resolvedIdentities ?? identityTracker?.record }
+
+    /// Second-guess the live identities with the whole clip in view — see
+    /// `WholeClipResolver`. Call once the last frame has been analysed, before saving.
+    ///
+    /// The pass can take a few seconds on a long clip, so it runs off the main thread, on
+    /// a copy of the identities: pause the analysis before calling this.
+    func finishIdentities() async {
+        let tracker = identityTracker
+        resolvedIdentities = await Task.detached(priority: .userInitiated) {
+            tracker?.resolvedRecord()
+        }.value
+    }
+
+    /// Set how many people are on court, which turns on identities. Must be called before
+    /// the first frame: a player numbered partway through would be numbered wrongly.
+    func setFormat(_ format: GameFormat?) {
+        identityTracker = format.map { IdentityTracker(format: $0) }
+    }
+
     /// Detection and tracking numbers for the run so far, for saving with it.
     var playerStats: PlayerDetectionStats {
         var stats = playerDetectionStats
@@ -250,7 +303,9 @@ class VisionTracker {
             config: playerTracker.config,
             tracksConfirmed: playerTracker.tracksConfirmed,
             confirmedTrackFrames: playerTracker.endedTrackFrames
-                + live.reduce(0) { $0 + $1.lastSeenFrame - $1.firstFrame }
+                + live.reduce(0) { $0 + $1.lastSeenFrame - $1.firstFrame },
+            identity: identityTracker?.summary,
+            appearance: identityTracker?.appearance.summary
         )
         return stats
     }
@@ -267,6 +322,7 @@ class VisionTracker {
         }
 
         let visible = playerTracker.visibleTracks
+        positions.record(frameID: frameCounter, time: currentFrameTime, tracks: visible)
 
         if let detections {
             previousPlayerSample = playerDetectionStats.record(
@@ -279,6 +335,36 @@ class VisionTracker {
         }
 
         return visible
+    }
+
+    /// Say which player each track is, reading how the clear players look on this frame
+    /// for the identity checks.
+    ///
+    /// Only players matched on this frame are read, so frames without detections read no
+    /// pixels — they only move identities on.
+    private func updateIdentities(
+        of players: [PlayerTrack],
+        pixelBuffer: CVImageBuffer,
+        orientation: CGImagePropertyOrientation
+    ) {
+        let samples = PipelineSignpost.measure("Appearance") {
+            let clean = AppearanceSeparation.cleanTracks(players, at: frameCounter)
+            let read = appearanceSampler.samples(
+                of: clean.map(\.box),
+                in: pixelBuffer,
+                orientation: orientation
+            ) ?? []
+            return Dictionary(zip(clean.map(\.id), read), uniquingKeysWith: { first, _ in first })
+        }
+
+        PipelineSignpost.measure("Identity") {
+            identityTracker?.update(
+                frameID: frameCounter,
+                timeSeconds: currentFrameTime,
+                tracks: players,
+                samples: samples
+            )
+        }
     }
 
     /// Decide who has the ball on this frame.
@@ -309,7 +395,7 @@ class VisionTracker {
     /// every `rimSampleInterval` frames.
     private func sampleRim(from results: [VNRecognizedObjectObservation]) {
         guard !shotTracker.isRimUserPlaced else { return }
-        if let lastRimSampleFrame, frameCounter - lastRimSampleFrame < Self.rimSampleInterval {
+        if let lastRimSampleFrame, frameCounter - lastRimSampleFrame < config.rimSampleInterval {
             return
         }
 
@@ -349,16 +435,24 @@ class VisionTracker {
     /// Assembled from the live objects rather than from defaults, so the record reflects
     /// what actually ran.
     func currentConfiguration() -> RunConfiguration {
-        RunConfiguration(
+        let ballSettings = ballDetector?.settings ?? BallDetector.Config()
+        return RunConfiguration(
             shotDetector: ShotDetectorConfig(),
-            ballROI: ballDetector?.config ?? BallROIPredictor.Config(),
-            fullFrameBallConfidence: Double(ballDetector?.fullFrameConfidence ?? 0.45),
-            croppedBallConfidence: Double(ballDetector?.croppedConfidence ?? 0.25),
+            ballROI: ballSettings.roi,
+            fullFrameBallConfidence: Double(ballSettings.fullFrameConfidence),
+            croppedBallConfidence: Double(ballSettings.croppedConfidence),
             modelIdentifier: ObjectDetector.modelIdentifier,
             rimSource: {
                 guard shotTracker.rim != nil else { return .none }
                 return shotTracker.isRimUserPlaced ? .userPlaced : .detected
-            }()
+            }(),
+            players: playerTracker.config,
+            possession: possessionTracker.config,
+            shooter: ShooterLocator.Config(),
+            identity: identityTracker?.config ?? IdentityTracker.Config(),
+            appearanceSampler: appearanceSampler.config,
+            vision: config,
+            rimPreflight: RimPreflight.Config()
         )
     }
 
@@ -400,5 +494,14 @@ class VisionTracker {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return visionModel
+    }
+}
+
+extension VisionTracker.Config {
+    // Lenient, so settings saved before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        rimSampleInterval = try container.decode(.rimSampleInterval, or: defaults.rimSampleInterval)
     }
 }

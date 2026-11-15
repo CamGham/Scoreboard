@@ -97,7 +97,19 @@ struct ShotTimelineView: View {
                 if let playerStats, playerStats.sampledFrames > 0 {
                     playerDetectionSection(playerStats)
                 }
-                
+
+                if let appearance = playerStats?.tracking?.appearance, appearance.comparisons > 0 {
+                    appearanceSection(appearance)
+                }
+
+                if let identities = gameState.identities, let revisions = identities.revisions {
+                    revisionsSection(revisions, record: identities)
+                }
+
+                if let identities = gameState.identities, !identities.checks.isEmpty {
+                    identityChecksSection(identities)
+                }
+
                 shotsSection
                 
                 if !gameState.abandonedAttempts.isEmpty {
@@ -119,7 +131,9 @@ struct ShotTimelineView: View {
                     orientedVideoSize: orientedVideoSize,
                     onDismiss: { replaying = nil },
                     onVerdict: { gameState.setVerdict($0, for: attempt.id) },
-                    possession: gameState.possession
+                    possession: gameState.possession,
+                    identities: gameState.identities,
+                    positions: gameState.positions
                 )
             }
         }
@@ -196,6 +210,174 @@ struct ShotTimelineView: View {
         }
     }
     
+    private func appearanceSection(_ summary: AppearanceSeparation.Summary) -> some View {
+        Section {
+            LabeledContent("Comparisons", value: "\(summary.comparisons)")
+            ForEach(AppearanceSeparation.Cue.allCases, id: \.self) { cue in
+                let score = summary.score(for: cue)
+                LabeledContent(
+                    Self.title(for: cue),
+                    value: score.compared > 0
+                        ? String(
+                            format: "%.0f%% of %d · weight %.1f",
+                            score.accuracy * 100,
+                            score.compared,
+                            AppearanceSeparation.weight(for: score)
+                        )
+                        : "Not measured"
+                )
+            }
+            LabeledContent(
+                "All together",
+                value: String(format: "%.0f%%", summary.combined.accuracy * 100)
+            )
+            if let samples = summary.heightSamples, let spread = summary.footSpread {
+                LabeledContent(
+                    "Height model",
+                    value: String(format: "%d samples, feet over %.0f%% of frame", samples, spread * 100)
+                )
+            }
+        } header: {
+            Text("Telling players apart")
+        } footer: {
+            Text("Each clear sample of a player is checked against that player's recent look and the other players' seen on the same frame. 50% is a coin flip; near 100% means the cue tells them apart. The weight is how much the cue counts when identities are checked after players touch. Height is judged against what's typical for that spot on court, once feet have been seen over at least 10% of the frame's height.")
+        }
+    }
+
+    private func revisionsSection(_ revisions: [IdentityRevision], record: IdentityRecord) -> some View {
+        Section {
+            if revisions.isEmpty {
+                Text("Nothing moved")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(revisions.enumerated()), id: \.offset) { _, revision in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.when(revision) + " · " + record.players.map(\.label).joined(separator: " ↔ "))
+                        .font(.subheadline.monospacedDigit())
+                    Text(String(
+                        format: "%.1f× better · %d %@",
+                        1 / max(revision.ratio, 0.001),
+                        revision.tracklets,
+                        revision.tracklets == 1 ? "stretch" : "stretches"
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Re-solved after the run · \(revisions.count) moved")
+        } footer: {
+            Text("Once the clip ended, every clear stretch of each player was compared with how they looked elsewhere in the clip, at the same spot across the court. These stretches fitted the other player clearly better, so their labels were swapped.")
+        }
+    }
+
+    private static func when(_ revision: IdentityRevision) -> String {
+        guard let start = revision.startTime else { return "Frame \(revision.startFrame)" }
+        let end = revision.endTime.map { " → " + ShotScrubber.timecode($0) } ?? ""
+        return ShotScrubber.timecode(start) + end
+    }
+
+    private func identityChecksSection(_ record: IdentityRecord) -> some View {
+        Section {
+            ForEach(Array(record.checks.enumerated()), id: \.offset) { _, check in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.when(check) + " · " + Self.players(in: check, record: record))
+                        .font(.subheadline.monospacedDigit())
+                    Text(Self.verdict(check))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if check.outcome == .neverClear, let why = Self.blockedSummary(check, record: record) {
+                        Text(why)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            Text("Identity checks · " + Self.tally(record.checks))
+        } footer: {
+            Text("Each time players touched. Scrub the review to the time shown and see whether they really came out swapped. Swap ÷ keep compares how far apart the looks were each way round: above 1 favours the labels as they were, below 1 favours swapping. It takes 15% either way to act. \"One side\" means only one player got clear in time, so their look alone decided it.")
+        }
+    }
+
+    private static func when(_ check: IdentityCheck) -> String {
+        guard let start = check.startTime else { return "Frame \(check.startFrame)" }
+        let settled = check.time.map { " → " + ShotScrubber.timecode($0) } ?? ""
+        return ShotScrubber.timecode(start) + settled
+    }
+
+    private static func players(in check: IdentityCheck, record: IdentityRecord) -> String {
+        check.playerIDs
+            .map { id in record.players.first { $0.id == id }?.label ?? "?" }
+            .joined(separator: " & ")
+    }
+
+    private static func verdict(_ check: IdentityCheck) -> String {
+        let ratio = check.keepCost.flatMap { keep in
+            check.otherCost.map { other in
+                keep > 0 ? String(format: " · swap ÷ keep %.2f", other / keep) : ""
+            }
+        } ?? ""
+
+        let side = check.oneSided == true ? " · one side" : ""
+
+        switch check.outcome {
+        case .kept: return "Kept" + side + ratio
+        case .swapped: return "Swapped" + side + ratio
+        case .tooClose: return "Too close to call" + side + ratio
+        case .neverClear:
+            return "Never clear · samples " + check.samples.map(String.init).joined(separator: " / ")
+        case .noEarlierLook: return "No earlier look to compare with"
+        }
+    }
+
+    /// Each player's frames since the last touch, by what kept them from being sampled:
+    /// "P1 clean 30 · P2 low confidence 41, not matched 9".
+    private static func blockedSummary(_ check: IdentityCheck, record: IdentityRecord) -> String? {
+        guard let blocked = check.blocked else { return nil }
+
+        return zip(check.playerIDs, blocked).map { id, counts in
+            let name = record.players.first { $0.id == id }?.label ?? "?"
+            let reasons = [
+                ("clean", counts.clean),
+                ("no track", counts.noTrack),
+                ("not matched", counts.notMatched),
+                ("low confidence", counts.lowConfidence),
+                ("touching a box with no player", counts.touchingNobody),
+            ]
+            .filter { $0.1 > 0 }
+            .sorted { $0.1 > $1.1 }
+            .map { "\($0.0) \($0.1)" }
+
+            return name + " " + (reasons.isEmpty ? "no frames" : reasons.joined(separator: ", "))
+        }
+        .joined(separator: " · ")
+    }
+
+    private static func tally(_ checks: [IdentityCheck]) -> String {
+        let order: [(IdentityCheck.Outcome, String)] = [
+            (.kept, "kept"), (.swapped, "swapped"), (.tooClose, "too close"),
+            (.neverClear, "never clear"), (.noEarlierLook, "no look"),
+        ]
+        return order.compactMap { outcome, name in
+            let count = checks.filter { $0.outcome == outcome }.count
+            return count > 0 ? "\(count) \(name)" : nil
+        }
+        .joined(separator: ", ")
+    }
+
+    private static func title(for cue: AppearanceSeparation.Cue) -> String {
+        switch cue {
+        case .head: "Head (hair)"
+        case .torso: "Torso"
+        case .shorts: "Shorts"
+        case .legs: "Legs"
+        case .feet: "Feet (shoes)"
+        case .height: "Height"
+        case .build: "Build"
+        }
+    }
+
     private func playerDetectionSection(_ stats: PlayerDetectionStats) -> some View {
         Section {
             LabeledContent(
@@ -212,6 +394,14 @@ struct ShotTimelineView: View {
                     "Mean time followed",
                     value: String(format: "%.0f frames", tracking.meanTrackLifetimeFrames)
                 )
+                if let identity = tracking.identity {
+                    LabeledContent("Players identified", value: "\(identity.playersSeen) of \(identity.playerCount)")
+                    LabeledContent("Relinked", value: "\(identity.relinks)")
+                    LabeledContent("Tracks with nobody", value: "\(identity.unassignedTracks)")
+                    LabeledContent("Checked after overlaps", value: "\(identity.checks)")
+                    LabeledContent("Swapped", value: "\(identity.swaps)")
+                    LabeledContent("Left uncertain", value: "\(identity.uncertain)")
+                }
             }
             LabeledContent(
                 "Frames with none",
@@ -232,7 +422,9 @@ struct ShotTimelineView: View {
         } header: {
             Text("Player tracking")
         } footer: {
-            if stats.tracking != nil {
+            if stats.tracking?.identity != nil {
+                Text("Players followed counts tracks, which break and restart. Relinked is how many of those breaks were joined back up to a player; tracks with nobody were left over once every player was taken. After players touch, their looks are compared with how they looked before: swapped means they came out the other way round, uncertain means it was too close to call or they never got clear. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
+            } else if stats.tracking != nil {
                 Text("Players followed should match the number of people in shot — more means identities broke and restarted. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
             } else {
                 Text("From before the player tracker: \"tracked\" is Apple's object tracker. Persisted is the share of players also found in the previous sample; low means boxes flicker.")
